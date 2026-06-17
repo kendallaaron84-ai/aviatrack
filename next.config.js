@@ -4,9 +4,6 @@ const nextConfig = {
     // Preserves your build configuration preferences safely
     ignoreBuildErrors: true,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   images: {
     remotePatterns: [
       {
