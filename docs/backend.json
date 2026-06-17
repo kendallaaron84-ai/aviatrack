@@ -1,0 +1,233 @@
+{
+  "entities": {
+    "Project": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Project",
+      "type": "object",
+      "description": "Represents a project with its details, financials, dependencies, and change orders.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the project."
+        },
+        "name": {
+          "type": "string",
+          "description": "The name of the project."
+        },
+        "wbs": {
+          "type": "string",
+          "description": "Work Breakdown Structure code for the project."
+        },
+        "deliveryMethod": {
+          "type": "string",
+          "description": "The delivery method used for the project (e.g., CMAR, DB, DBB)."
+        },
+        "status": {
+          "type": "string",
+          "description": "The current status of the project."
+        },
+        "currentPhase": {
+          "type": "string",
+          "description": "The current design/construction phase of the project."
+        },
+        "glCodeComputerEquipmentOver5k": {
+          "type": "string",
+          "description": "GL Code for computer equipment over $5,000."
+        },
+        "glCodeComputerEquipmentUnder5k": {
+          "type": "string",
+          "description": "GL Code for computer equipment under $5,000."
+        },
+        "glCodeNonComputerEquipmentOver5k": {
+          "type": "string",
+          "description": "GL Code for non-computer equipment over $5,000."
+        },
+        "glCodeNonComputerEquipmentUnder5k": {
+          "type": "string",
+          "description": "GL Code for non-computer equipment under $5,000."
+        },
+        "glCodeInstallation": {
+          "type": "string",
+          "description": "GL Code for installation (PM, Labor)."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "wbs",
+        "deliveryMethod",
+        "status",
+        "currentPhase"
+      ]
+    },
+    "Financial": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Financial",
+      "type": "object",
+      "description": "Represents the financial details for a specific discipline within a project.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the financial record."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Reference to Project. (Relationship: Project 1:N Financial)"
+        },
+        "discipline": {
+          "type": "string",
+          "description": "The IT discipline associated with the financial record."
+        },
+        "item": {
+          "type": "string",
+          "description": "The specific item within the discipline."
+        },
+        "baseline": {
+          "type": "number",
+          "description": "The baseline cost estimate for the item."
+        },
+        "shoppingCart": {
+          "type": "number",
+          "description": "The actual cost from the shopping cart for the item."
+        },
+        "po": {
+          "type": "string",
+          "description": "The purchase order number for the item."
+        },
+        "grStatus": {
+          "type": "string",
+          "description": "The Goods Received status."
+        },
+        "grStartTime": {
+          "type": "string",
+          "description": "The Goods Received start time.",
+          "format": "date-time"
+        },
+        "grEndTime": {
+          "type": "string",
+          "description": "The Goods Received end time.",
+          "format": "date-time"
+        },
+        "vendor": {
+          "type": "string",
+          "description": "The vendor for the financial item."
+        }
+      },
+      "required": [
+        "projectId",
+        "discipline",
+        "item",
+        "baseline",
+        "shoppingCart"
+      ]
+    },
+    "Dependency": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Dependency",
+      "type": "object",
+      "description": "Represents a project dependency and its associated dates and status.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the dependency."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Reference to Project. (Relationship: Project 1:N Dependency)"
+        },
+        "task": {
+          "type": "string",
+          "description": "The name of the dependency task."
+        },
+        "gcMilestoneDate": {
+          "type": "string",
+          "description": "The General Contractor milestone date for the dependency.",
+          "format": "date"
+        },
+        "itTargetDate": {
+          "type": "string",
+          "description": "The IT target date for the dependency.",
+          "format": "date"
+        },
+        "status": {
+          "type": "string",
+          "description": "The status of the dependency."
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "task",
+        "gcMilestoneDate",
+        "itTargetDate",
+        "status"
+      ]
+    },
+    "ChangeOrder": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ChangeOrder",
+      "type": "object",
+      "description": "Represents a change order for a project.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the change order."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Reference to Project. (Relationship: Project 1:N ChangeOrder)"
+        },
+        "description": {
+          "type": "string",
+          "description": "A description of the change order."
+        },
+        "amount": {
+          "type": "number",
+          "description": "The cost of the change order."
+        },
+        "status": {
+          "type": "string",
+          "description": "The status of the change order."
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "description",
+        "amount"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/Project"
+      },
+      "description": "Stores project details. The 'projectId' is used as the document ID."
+    },
+    "/projects/{projectId}/financials/{financialId}": {
+      "schema": {
+        "$ref": "#/entities/Financial"
+      },
+      "description": "Stores financial records for a specific project. Includes denormalized 'projectId' for authorization independence."
+    },
+    "/projects/{projectId}/dependencies/{dependencyId}": {
+      "schema": {
+        "$ref": "#/entities/Dependency"
+      },
+      "description": "Stores project dependencies. Includes denormalized 'projectId' for authorization independence."
+    },
+    "/projects/{projectId}/changeOrders/{changeOrderId}": {
+      "schema": {
+        "$ref": "#/entities/ChangeOrder"
+      },
+      "description": "Stores change orders for a specific project. Includes denormalized 'projectId' for authorization independence."
+    }
+  }
+}

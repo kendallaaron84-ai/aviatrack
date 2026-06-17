@@ -1,0 +1,22 @@
+{
+  "placeholderImages": [
+    {
+      "id": "1",
+      "description": "An airport terminal with a wifi symbol.",
+      "imageUrl": "https://images.unsplash.com/photo-1585585828599-461a0419b788?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw4fHxhaXJwb3J0JTIwdGVybWluYWx8ZW58MHx8fHwxNzcwNDE3MDg2fDA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "airport terminal"
+    },
+    {
+      "id": "2",
+      "description": "A security camera in an airport concourse.",
+      "imageUrl": "https://images.unsplash.com/photo-1520697830682-bbb6e85e2b0b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHw5fHxzZWN1cml0eSUyMGNhbWVyYXxlbnwwfHx8fDE3NzAzMzE1NTd8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "security camera"
+    },
+    {
+      "id": "3",
+      "description": "Audiovisual screens in a new terminal.",
+      "imageUrl": "https://images.unsplash.com/photo-1675752521573-fe6fe0433ff8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwyfHxkaWdpdGFsJTIwZGlzcGxheXxlbnwwfHx8fDE3NzA0MTcwODZ8MA&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "digital display"
+    }
+  ]
+}
