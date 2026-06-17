@@ -9,8 +9,9 @@
     "rewrites": [
       {
         "source": "**",
-        "appHostingIndex": {
-          "backendId": "aviatrack"
+        "run": {
+          "serviceId": "aviatrack",
+          "region": "us-central1"
         }
       }
     ]
