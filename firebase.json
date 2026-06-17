@@ -1,4 +1,10 @@
 {
+  "firestore": {
+    "database": "(default)",
+    "location": "us-central1",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
   "hosting": {
     "public": "public",
     "ignore": [
@@ -9,9 +15,8 @@
     "rewrites": [
       {
         "source": "**",
-        "run": {
-          "serviceId": "aviatrack",
-          "region": "us-central1"
+        "appHostingIndex": {
+          "backendId": "aviatrack-prod"
         }
       }
     ]
