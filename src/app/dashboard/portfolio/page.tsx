@@ -5,15 +5,10 @@ import React, { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SlidersHorizontal, Layers, LayoutDashboard, Database, ShieldAlert, CheckCircle2 } from "lucide-react";
-import { db, auth } from "@/lib/firebase";
-
-// Native Firebase (Using your exact file initialization pattern)
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore, collection, onSnapshot } from "firebase/firestore";
-
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(app);
+import { SlidersHorizontal, Layers, LayoutDashboard, Database, CheckCircle2 } from "lucide-react";
+// Centralized Database Context Integration (Bypasses local config dependencies)
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot } from "firebase/firestore";
 
 // Definitive Master Schema Mapping Lists
 const FACILITY_ASSETS = [
@@ -50,7 +45,7 @@ export default function YteviaExecutiveControlRoom() {
   const [fieldObservations, setFieldObservations] = useState<any[]>([]);
 
   useEffect(() => {
-    // Stream configuration and operational assets
+    // Stream configuration using the imported centralized db instance cleanly
     const unsubWp = onSnapshot(collection(db, "master_work_packages"), (s) => setWorkPackages(s.docs.map(d => d.data())));
     const unsubObs = onSnapshot(collection(db, "field_observations"), (s) => setFieldObservations(s.docs.map(d => d.data())));
     return () => { unsubWp(); unsubObs(); };
@@ -66,29 +61,28 @@ export default function YteviaExecutiveControlRoom() {
     new Set(selectedAssets.flatMap(assetId => ELEVATION_LEVELS[assetId] || []))
   );
 
-  // This logic cross-references your 4-tier selection states with your actual live data parameters
-const filteredPackages = workPackages.filter(wp => {
-  // If no specific sectors are chosen, pass all; otherwise, match the active sector tags
-  if (selectedSectors.length > 0) {
-    const assetMatch = selectedAssets.includes(wp.id.startsWith("FPP") ? "TDP" : "TCPG");
-    return assetMatch;
-  }
-  return true;
-});
+  // Cross-references selection states with actual live data parameters safely
+  const filteredPackages = workPackages.filter(wp => {
+    if (selectedAssets.length > 0) {
+      const assetMatch = selectedAssets.includes(wp.id?.startsWith("FPP") ? "TDP" : "TCPG");
+      if (!assetMatch) return false;
+    }
+    return true;
+  });
 
-const filteredObservationsList = fieldObservations.filter(obs => {
-  // 1. Filter by Capital Facility Asset
-  if (selectedAssets.length > 0 && !selectedAssets.includes(obs.program)) return false;
-  
-  // 2. Filter by Linked Work Package
-  if (selectedTracks.length > 0) {
-    const isDirect = obs.workPackageId === "FPP004b" || obs.workPackageId === "WP5"; // Sample logic mapping IT_Direct vs CMAR
-    if (selectedTracks.includes("IT_DIRECT") && !isDirect) return false;
-    if (selectedTracks.includes("CMAR") && isDirect) return false;
-  }
-  
-  return true;
-});
+  const filteredObservationsList = fieldObservations.filter(obs => {
+    // 1. Filter by Capital Facility Asset
+    if (selectedAssets.length > 0 && !selectedAssets.includes(obs.program)) return false;
+    
+    // 2. Filter by Linked Work Package
+    if (selectedTracks.length > 0) {
+      const isDirect = obs.workPackageId === "FPP004b" || obs.workPackageId === "WP5"; 
+      if (selectedTracks.includes("IT_DIRECT") && !isDirect) return false;
+      if (selectedTracks.includes("CMAR") && isDirect) return false;
+    }
+    
+    return true;
+  });
 
   return (
     <div className="max-w-[1750px] mx-auto space-y-6 pb-12">
@@ -107,7 +101,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
         </Badge>
       </div>
 
-      {/* PILLAR 3: THE 4-TIER MULTI-SELECT INTERACTIVE SLICER SIDEBAR BAR */}
+      {/* THE 4-TIER MULTI-SELECT INTERACTIVE SLICER SIDEBAR BAR */}
       <Card className="border-slate-200 shadow-xs rounded-sm overflow-hidden bg-white">
         <CardHeader className="bg-slate-50 border-b py-2.5 flex flex-row items-center gap-2">
           <SlidersHorizontal className="h-4 w-4 text-slate-500" />
@@ -128,9 +122,10 @@ const filteredObservationsList = fieldObservations.filter(obs => {
                 return (
                   <button
                     key={asset.id}
+                    type="button"
                     onClick={() => {
                       toggleSelection(asset.id, selectedAssets, setSelectedAssets);
-                      setSelectedLevels([]); // Clear elevation layers on shift to ensure clean data cross-filtering
+                      setSelectedLevels([]); 
                     }}
                     className={`w-full text-left px-2.5 py-1.5 rounded-xs border font-semibold transition-all text-[11px] ${active ? "bg-[#142E88] border-[#142E88] text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                   >
@@ -153,6 +148,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
                   return (
                     <button
                       key={level}
+                      type="button"
                       onClick={() => toggleSelection(level, selectedLevels, setSelectedLevels)}
                       className={`w-full text-left px-2.5 py-1.5 rounded-xs border font-semibold transition-all text-[11px] ${active ? "bg-[#142E88] border-[#142E88] text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                     >
@@ -173,6 +169,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
                 return (
                   <button
                     key={sector.id}
+                    type="button"
                     onClick={() => toggleSelection(sector.id, selectedSectors, setSelectedSectors)}
                     className={`w-full text-left px-2.5 py-1.5 rounded-xs border font-semibold transition-all text-[11px] ${active ? "bg-[#142E88] border-[#142E88] text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                   >
@@ -192,6 +189,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
                 return (
                   <button
                     key={track.id}
+                    type="button"
                     onClick={() => toggleSelection(track.id, selectedTracks, setSelectedTracks)}
                     className={`w-full text-left px-2.5 py-1.5 rounded-xs border font-semibold transition-all text-[11px] ${active ? "bg-[#142E88] border-[#142E88] text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                   >
@@ -205,7 +203,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
         </CardContent>
       </Card>
 
-      {/* TEMPORARY STATUS PLACEHOLDER SUITE FOR REMAINING MODULE INTELLIGENCE */}
+      {/* FILTER TRACKER AND STATS PANEL */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="border-slate-200 border-dashed bg-slate-50/50 p-6 rounded-sm flex items-center gap-3">
           <Layers className="h-6 w-6 text-slate-400" />
@@ -225,7 +223,7 @@ const filteredObservationsList = fieldObservations.filter(obs => {
           <div>
             <h4 className="text-xs font-bold text-slate-700 uppercase">Live Pipeline Statistics</h4>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Synced master assets found in memory footprint: <strong className="text-slate-800">{workPackages.length} Work Packages</strong> and <strong className="text-slate-800">{fieldObservations.length} Active Field Logs</strong>.
+              Filtered Matrix View Payload: <strong className="text-slate-800">{filteredPackages.length} Active Packages</strong> and <strong className="text-slate-800">{filteredObservationsList.length} Processed Field Logs</strong>.
             </p>
           </div>
         </Card>
