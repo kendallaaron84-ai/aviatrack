@@ -17,7 +17,7 @@ export async function POST(req: Request) {
       `[${log.timestamp} - ${log.projectID}]: ${log.text}`
     ).join('\n');
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
 
     // The System Prompt: This is the secret to forcing a clean, executive format
     const prompt = `

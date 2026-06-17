@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { 
   HardHat, Plus, Trash2, ArrowRight, AlertCircle, FileText, BookOpen, Send, CalendarDays, 
   Lock, Network, X, TrendingUp, Save, Clock, ShieldAlert, CheckCircle2, Unlock, Search, 
-  Download, Paperclip, Sparkles, AlertTriangle, Activity, History 
+  Download, Paperclip, Sparkles 
 } from "lucide-react";
 import { db, auth } from "@/lib/firebase"; 
 import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc } from "firebase/firestore";
@@ -55,7 +55,6 @@ export default function ObservationWorkbenchPage() {
   // 4. AI & REPORTING STATES
   const [isGenerating, setIsGenerating] = useState(false);
   const [reportForm, setReportForm] = useState({ periodStart: "", periodEnd: "", lookAhead: "", risks: "", impact: "", resolutionPlan: "", actionItems: "" });
-  const [viewingSnapshot, setViewingSnapshot] = useState<any>(null);
 
   // Fallback for active project data
   const activeProjectData = availableProjects.find(p => p.id === selectedProject) || { name: "Loading...", budget: 0 };
@@ -530,7 +529,7 @@ export default function ObservationWorkbenchPage() {
                   <TableRow key={report.id} className="hover:bg-slate-50/50 transition-colors">
                     <TableCell className="text-xs font-mono font-medium text-slate-700">{new Date(report.timestamp).toLocaleDateString()}</TableCell><TableCell className="text-xs font-semibold text-[#142E88]">{report.reportingPeriod}</TableCell><TableCell className="text-xs text-slate-500">{report.loggedBy}</TableCell>
                     <TableCell className="text-xs font-mono font-bold"><span className={parseFloat(report.evmMetrics?.spi) < 1 ? 'text-red-600' : 'text-emerald-600'}>SPI: {report.evmMetrics?.spi || 'N/A'}</span><span className="text-slate-300 mx-2">|</span><span className={parseFloat(report.evmMetrics?.cpi) < 1 ? 'text-red-600' : 'text-emerald-600'}>CPI: {report.evmMetrics?.cpi || 'N/A'}</span></TableCell>
-                    <TableCell className="text-right"><Button variant="ghost" size="sm" className="text-xs font-bold text-[#142E88] h-8 cursor-pointer" onClick={() => setViewingSnapshot(report)}>View Snapshot</Button></TableCell>
+                    <TableCell className="text-right"><Button variant="ghost" size="sm" className="text-xs font-bold text-[#142E88] h-8 cursor-pointer">View Snapshot</Button></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -574,67 +573,6 @@ export default function ObservationWorkbenchPage() {
             <div className="p-4 border-t bg-slate-50 flex justify-end gap-3 rounded-b-lg">
               <Button type="button" onClick={() => setIsReportModalOpen(false)} variant="outline" className="text-slate-600 text-xs font-bold cursor-pointer">Cancel</Button>
               <Button form="biweekly-form" type="submit" disabled={isSubmitting} className="bg-[#142E88] hover:bg-[#2b27b5] text-white font-bold h-9 rounded-sm flex items-center justify-center gap-2 cursor-pointer">Save Bi-Weekly Report</Button>
-            </div>
-          </div>
-        </div>
-      )}
-  {/* HISTORICAL SNAPSHOT READ-ONLY MODAL */}
-      {viewingSnapshot && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-md shadow-2xl w-full max-w-4xl flex flex-col relative overflow-hidden">
-            <div className="bg-slate-800 text-white px-5 py-3 flex items-center justify-between">
-              <h3 className="text-sm font-bold uppercase tracking-widest flex items-center gap-2">
-                <History className="h-4 w-4 text-slate-400" /> Historical Snapshot: {viewingSnapshot.projectId}
-              </h3>
-              <button onClick={() => setViewingSnapshot(null)} className="text-slate-400 hover:text-white cursor-pointer transition-colors">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            
-            <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto bg-slate-50/50">
-              {/* Header Meta */}
-              <div className="grid grid-cols-4 gap-4 pb-4 border-b border-slate-200 bg-white p-4 rounded-sm shadow-xs">
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Reporting Period</span><span className="text-sm font-semibold text-[#142E88]">{viewingSnapshot.reportingPeriod}</span></div>
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Submitted By</span><span className="text-sm font-semibold text-slate-800">{viewingSnapshot.loggedBy?.split('@')[0]}</span></div>
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Date Logged</span><span className="text-sm font-mono font-bold text-slate-800">{new Date(viewingSnapshot.timestamp).toLocaleDateString()}</span></div>
-                <div>
-                  <span className="block text-[10px] font-bold text-slate-500 uppercase">EVM Performance</span>
-                  <div className="text-sm font-mono font-bold">
-                    <span className={parseFloat(viewingSnapshot.evmMetrics?.spi) < 1 ? 'text-red-600' : 'text-emerald-600'}>SPI: {viewingSnapshot.evmMetrics?.spi || 'N/A'}</span>
-                    <span className="mx-2 text-slate-300">|</span>
-                    <span className={parseFloat(viewingSnapshot.evmMetrics?.cpi) < 1 ? 'text-red-600' : 'text-emerald-600'}>CPI: {viewingSnapshot.evmMetrics?.cpi || 'N/A'}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Narrative Content */}
-              <div className="bg-white p-5 rounded-sm border border-slate-200 shadow-xs space-y-6">
-                <div>
-                  <span className="block text-xs font-bold text-slate-800 mb-2 border-b pb-1">3-Week Look Ahead</span>
-                  <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.lookAhead || "No data provided."}</p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-red-50/30 p-3 rounded-sm border border-red-100">
-                    <span className="block text-xs font-bold text-red-700 mb-2 border-b border-red-200 pb-1 flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" /> Identified Risks</span>
-                    <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.risks || "No data provided."}</p>
-                  </div>
-                  <div className="bg-amber-50/30 p-3 rounded-sm border border-amber-100">
-                    <span className="block text-xs font-bold text-amber-700 mb-2 border-b border-amber-200 pb-1 flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" /> Schedule/Financial Impact</span>
-                    <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.impact || "No data provided."}</p>
-                  </div>
-                </div>
-
-                <div>
-                  <span className="block text-xs font-bold text-slate-800 mb-2 border-b pb-1 flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Resolution Plan</span>
-                  <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.resolutionPlan || "No data provided."}</p>
-                </div>
-
-                <div>
-                  <span className="block text-xs font-bold text-slate-800 mb-2 border-b pb-1 flex items-center gap-1.5"><Clock className="h-3.5 w-3.5 text-[#142E88]" /> Action Items Required</span>
-                  <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.actionItems || "No action items requested."}</p>
-                </div>
-              </div>
             </div>
           </div>
         </div>
