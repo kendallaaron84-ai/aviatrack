@@ -12,12 +12,11 @@
       "**/.*",
       "**/node_modules/**"
     ],
-    "rewrites": [
+    "redirects": [
       {
         "source": "**",
-        "appHostingIndex": {
-          "backendId": "aviatrack-prod"
-        }
+        "destination": "https://aviatrack-prod--aviatrack-prod.us-central1.hosted.app",
+        "type": 301
       }
     ]
   }
