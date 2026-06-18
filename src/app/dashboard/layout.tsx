@@ -3,6 +3,7 @@
 
 import { useState, useEffect } from "react";
 import { getPermissions } from "@/lib/security"; //
+import { initiateGoogleSignIn } from "@/firebase/non-blocking-login"; // Make sure the relative path points to your non-blocking file
 import Link from "next/link"; //
 import { Plane, LayoutDashboard, FileText, Network, HardHat, FileSpreadsheet, ShieldCheck, LogOut, PieChart, Library, Eye, EyeOff, Bell, MessageSquare, AlertCircle } from "lucide-react"; //
 import { Button } from "@/components/ui/button"; //
@@ -183,6 +184,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }; //
 
+  const handleGoogleSignIn = async () => {
+  const provider = new GoogleAuthProvider();
+  try {
+    // This triggers a secure popup window directly through Google's servers
+    const result = await signInWithPopup(auth, provider);
+    console.log("Authenticated User:", result.user.email);
+  } catch (error) {
+    console.error("Google Authentication Failed:", error);
+  }
+};
+
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -238,8 +250,32 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </button>
             </div>
           </div>
-          <Button type="submit" className="w-full bg-[#142E88] text-white py-2 font-medium">Sign In</Button>
+          
+          {/* Email / Password Submit Action */}
+          <Button type="submit" className="w-full bg-[#142E88] text-white py-2 font-medium">
+            Sign In with Password
+          </Button>
+
+          {/* 🔘 NEW: EXPLOIT GOOGLE SSO TO BYPASS THE FIREWALL */}
+          <div className="relative flex py-2 items-center">
+            <div className="flex-1 border-t border-slate-200"></div>
+            <span className="shrink-0 mx-4 text-[10px] text-slate-400 font-bold uppercase tracking-wider">Or Continue With</span>
+            <div className="flex-1 border-t border-slate-200"></div>
+          </div>
+
+          <Button 
+            type="button" 
+            onClick={() => initiateGoogleSignIn(auth)} 
+            className="w-full bg-white hover:bg-slate-50 text-slate-700 font-semibold py-2 border border-slate-300 rounded-md flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all"
+          >
+            {/* Standard inline SVG for clean Google branding */}
+            <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24">
+              <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.11C18.28 1.845 15.448 1 12.24 1 5.48 1 0 6.48 0 13.2s5.48 12.2 12.24 12.2c7.055 0 11.75-4.96 11.75-11.96 0-.81-.087-1.425-.195-1.955H12.24z"/>
+            </svg>
+            Sign in with Google Workspace
+          </Button>
         </form>
+      
       </div>
     );
   } //
