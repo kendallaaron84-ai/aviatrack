@@ -272,7 +272,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24">
               <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.11C18.28 1.845 15.448 1 12.24 1 5.48 1 0 6.48 0 13.2s5.48 12.2 12.24 12.2c7.055 0 11.75-4.96 11.75-11.96 0-.81-.087-1.425-.195-1.955H12.24z"/>
             </svg>
-            Sign in with Google Workspace
+            Sign in COSA Email
           </Button>
         </form>
       
