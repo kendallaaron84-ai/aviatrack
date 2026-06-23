@@ -192,6 +192,28 @@ export default function AdminPortalPage() {
     } catch (e) { } finally { setIsSaving(false); }
   };
 
+  const handleUpdateBudgetInline = async (projectId: string, newBudgetStr: string) => {
+  const parsedBudget = parseFloat(newBudgetStr);
+  if (isNaN(parsedBudget)) return;
+
+  try {
+    const projectDocRef = doc(db, "admin_projects", projectId);
+    await updateDoc(projectDocRef, {
+      budget: parsedBudget
+    });
+    toast({ 
+      title: "Budget Adjusted", 
+      description: `Baseline budget for ${projectId} successfully updated to $${parsedBudget.toLocaleString()}.` 
+    });
+  } catch (err: any) {
+    toast({ 
+      variant: "destructive", 
+      title: "Adjustment Failed", 
+      description: err.message 
+    });
+  }
+};
+
   const handleUpdateGeospatialData = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingProjectId) return;
@@ -349,7 +371,22 @@ export default function AdminPortalPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-xs font-mono text-slate-500">{p.wbs}</TableCell>
-                      <TableCell className="text-xs font-bold text-right">${(p.budget || 0).toLocaleString()}</TableCell>
+                      <TableCell className="text-right w-[180px]">
+                        <div className="flex items-center justify-end gap-1.5 group">
+                          <span className="text-xs font-bold text-slate-400">$</span>
+                          <input
+                            type="number"
+                            defaultValue={p.budget || 0}
+                            onBlur={(e) => handleUpdateBudgetInline(p.id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                            className="w-28 text-right bg-transparent hover:bg-slate-100 focus:bg-white text-xs font-bold text-slate-800 border border-transparent hover:border-slate-200 focus:border-slate-300 focus:ring-1 focus:ring-[#142E88] p-1 rounded-xs transition-all focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          />
+                        </div>
+                      </TableCell>
                       <TableCell className="text-[10px] font-mono text-slate-400">
                         {(p.latitude || 29.53000).toFixed(6)}, {(p.longitude || -98.46000).toFixed(6)}
                       </TableCell>

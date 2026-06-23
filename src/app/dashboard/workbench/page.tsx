@@ -60,6 +60,9 @@ export default function ObservationWorkbenchPage() {
   // Fallback for active project data
   const activeProjectData = availableProjects.find(p => p.id === selectedProject) || { name: "Loading...", budget: 0 };
 
+  // 5. SCREEN ACCORDION & VISIBILITY STATE
+  const [isMilestoneSectionCollapsed, setIsMilestoneSectionCollapsed] = useState(false);
+
   // ==========================================
   // LIFECYCLE HOOKS (USE EFFECT)
   // ==========================================
@@ -145,6 +148,22 @@ export default function ObservationWorkbenchPage() {
     log.content.toLowerCase().includes(emailSearch.toLowerCase()) ||
     log.sender.toLowerCase().includes(emailSearch.toLowerCase())
   ), [emailLogs, emailSearch]);
+
+  // Chronological Milestone Sequence Sorting (Forecast Start Date Anchor)
+  const sequencedMilestones = useMemo(() => {
+    return [...milestones].sort((a, b) => {
+      if (!a.forecastStart) return 1;
+      if (!b.forecastStart) return -1;
+      return new Date(a.forecastStart).getTime() - new Date(b.forecastStart).getTime();
+    });
+  }, [milestones]);
+
+  // Handler to toggle dashboard roll-up flags dynamically
+  const handleToggleDashboardVisibility = (id: string, currentStatus: boolean) => {
+    setMilestones(milestones.map(m => 
+      m.id === id ? { ...m, showOnDashboard: !currentStatus } : m
+    ));
+  };
 
   // ==========================================
   // EVENT HANDLERS
@@ -366,65 +385,97 @@ export default function ObservationWorkbenchPage() {
 
       {/* ROW 2: MILESTONE MANAGEMENT */}
       <Card className="border-slate-200 shadow-sm rounded-sm bg-white">
-        <CardHeader className="bg-slate-50 border-b py-3.5 flex flex-row items-center justify-between">
-          <div>
-            <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5"><Clock className="h-4 w-4 text-[#142E88]" /> Milestone Lifecycle & Earned Schedule Engine</CardTitle>
-            <CardDescription className="text-xs">Baseline milestone inputs are locked down to prevent distortion, but can be updated by an Admin if an error occurs.</CardDescription>
+        <CardHeader 
+          onClick={() => setIsMilestoneSectionCollapsed(!isMilestoneSectionCollapsed)}
+          className="bg-slate-50 border-b py-3.5 flex flex-row items-center justify-between cursor-pointer hover:bg-slate-100/50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-slate-400 font-bold font-mono text-sm">
+              {isMilestoneSectionCollapsed ? "➕" : "➖"}
+            </span>
+            <div>
+              <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="h-4 w-4 text-[#142E88]" /> Milestone Lifecycle & Earned Schedule Engine
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Click headers to collapse section. Currently mapping {milestones.length} operational line items.
+              </CardDescription>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button onClick={() => handleAddMilestone("Construction")} variant="outline" size="sm" className="h-8 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border-amber-200 cursor-pointer"><Plus className="h-3 w-3 mr-1" /> Add Const.</Button>
-            <Button onClick={() => handleAddMilestone("IT")} variant="outline" size="sm" className="h-8 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border-blue-200 cursor-pointer"><Plus className="h-3 w-3 mr-1" /> Add IT</Button>
-          </div>
+          {!isMilestoneSectionCollapsed && (
+            <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+              <Button onClick={() => handleAddMilestone("Construction")} variant="outline" size="sm" className="h-8 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border-amber-200 cursor-pointer"><Plus className="h-3 w-3 mr-1" /> Add Const.</Button>
+              <Button onClick={() => handleAddMilestone("IT")} variant="outline" size="sm" className="h-8 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border-blue-200 cursor-pointer"><Plus className="h-3 w-3 mr-1" /> Add IT</Button>
+            </div>
+          )}
         </CardHeader>
-        <CardContent className="p-0 overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent bg-slate-100/50">
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider">Type</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44">Milestone Target Name</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Static Baseline Dates</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Active Forecast Dates</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Baseline Plan</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center bg-blue-50/30 text-[#142E88]">Earned Schedule Est.</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Variance</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44 text-red-700">Critical Path Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-wider w-24">Status</TableHead>
-                <TableHead className="w-[40px]"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {milestones.map((m) => {
-                const baseDays = calculateBaselineDuration(m.baselineStart, m.baselineEnd);
-                const estDays = calculateEstimatedDuration(m.baselineStart, m.baselineEnd);
-                const variance = calculateMilestoneVariance(m.baselineEnd, m.forecastEnd);
-                return (
-                  <TableRow key={m.id} className="hover:bg-slate-50/50">
-                    <TableCell><Badge className={`shadow-none text-[10px] font-bold ${m.type === 'Construction' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>{m.type}</Badge></TableCell>
-                    <TableCell><Input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} className="h-8 text-xs font-semibold" placeholder="Milestone Name" /></TableCell>
-                    <TableCell className="space-y-1">
-                      <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" disabled={!isAdminMode} value={m.baselineStart} onChange={e => updateMilestone(m.id, "baselineStart", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
-                      <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" disabled={!isAdminMode} value={m.baselineEnd} onChange={e => updateMilestone(m.id, "baselineEnd", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
-                    </TableCell>
-                    <TableCell className="space-y-1">
-                      <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" value={m.forecastStart} onChange={e => updateMilestone(m.id, "forecastStart", e.target.value)} className="h-7 text-[10px] px-1 font-mono" /></div>
-                      <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" value={m.forecastEnd} onChange={e => updateMilestone(m.id, "forecastEnd", e.target.value)} className="h-7 text-[10px] px-1 font-mono border-blue-200" /></div>
-                    </TableCell>
-                    <TableCell className="text-center"><span className="text-xs font-bold font-mono text-slate-500">{baseDays}d</span></TableCell>
-                    <TableCell className="text-center bg-blue-50/10 border-x border-blue-100/50"><span className={`text-xs font-black font-mono ${estDays > baseDays ? 'text-amber-600' : 'text-emerald-600'}`}>{estDays > 0 ? `${estDays}d` : '--'}</span></TableCell>
-                    <TableCell className="text-center"><span className={`text-xs font-bold font-mono ${variance > 0 ? 'text-red-600' : (variance < 0 ? 'text-emerald-600' : 'text-slate-400')}`}>{variance > 0 ? `+${variance}d` : `${variance}d`}</span></TableCell>
-                    <TableCell>
-                      <select value={m.criticalPathStatus || "🟢 On Track"} onChange={e => updateMilestone(m.id, "criticalPathStatus", e.target.value)} className={`h-8 border rounded-sm text-[10px] font-bold px-1 w-full bg-white ${m.criticalPathStatus === '🔴 Critical Path Blocked' ? 'border-red-200 text-red-600 bg-red-50/50' : m.criticalPathStatus === '🟡 Delayed but Sub-Critical' ? 'border-amber-200 text-amber-600 bg-amber-50/30' : 'border-slate-200 text-emerald-600'}`}>
-                        <option value="🟢 On Track">🟢 On Track</option><option value="🟡 Delayed but Sub-Critical">🟡 Delayed but Sub-Critical</option><option value="🔴 Critical Path Blocked">🔴 Critical Path Blocked</option>
-                      </select>
-                    </TableCell>
-                    <TableCell><select value={m.status} onChange={e => updateMilestone(m.id, "status", e.target.value)} className="h-8 border border-slate-200 rounded-sm text-[10px] font-bold px-1 w-full bg-white"><option value="Planned">Planned</option><option value="In Progress">In Progress</option><option value="Complete">Complete</option><option value="Blocked">Blocked</option></select></TableCell>
-                    <TableCell><button onClick={() => removeMilestone(m.id)} className="text-red-400 hover:text-red-600 p-1 cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
+
+        {!isMilestoneSectionCollapsed && (
+          <CardContent className="p-0 overflow-x-auto transition-all">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent bg-slate-100/50">
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider">Type</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44">Milestone Target Name</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Static Baseline Dates</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Active Forecast Dates</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Baseline Plan</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center bg-blue-50/30 text-[#142E88]">Earned Schedule Est.</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Variance</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44 text-red-700">Critical Path Status</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-24">Status</TableHead>
+                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center w-28">Rollup Visibility</TableHead>
+                  <TableHead className="w-[40px]"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sequencedMilestones.map((m) => {
+                  const baseDays = calculateBaselineDuration(m.baselineStart, m.baselineEnd);
+                  const estDays = calculateEstimatedDuration(m.baselineStart, m.baselineEnd);
+                  const variance = calculateMilestoneVariance(m.baselineEnd, m.forecastEnd);
+                  return (
+                    <TableRow key={m.id} className="hover:bg-slate-50/50">
+                      <TableCell><Badge className={`shadow-none text-[10px] font-bold ${m.type === 'Construction' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>{m.type}</Badge></TableCell>
+                      <TableCell><Input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} className="h-8 text-xs font-semibold" placeholder="Milestone Name" /></TableCell>
+                      <TableCell className="space-y-1">
+                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" disabled={!isAdminMode} value={m.baselineStart} onChange={e => updateMilestone(m.id, "baselineStart", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
+                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" disabled={!isAdminMode} value={m.baselineEnd} onChange={e => updateMilestone(m.id, "baselineEnd", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
+                      </TableCell>
+                      <TableCell className="space-y-1">
+                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" value={m.forecastStart} onChange={e => updateMilestone(m.id, "forecastStart", e.target.value)} className="h-7 text-[10px] px-1 font-mono" /></div>
+                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" value={m.forecastEnd} onChange={e => updateMilestone(m.id, "forecastEnd", e.target.value)} className="h-7 text-[10px] px-1 font-mono border-blue-200" /></div>
+                      </TableCell>
+                      <TableCell className="text-center"><span className="text-xs font-bold font-mono text-slate-500">{baseDays}d</span></TableCell>
+                      <TableCell className="text-center bg-blue-50/10 border-x border-blue-100/50"><span className={`text-xs font-black font-mono ${estDays > baseDays ? 'text-amber-600' : 'text-emerald-600'}`}>{estDays > 0 ? `${estDays}d` : '--'}</span></TableCell>
+                      <TableCell className="text-center"><span className={`text-xs font-bold font-mono ${variance > 0 ? 'text-red-600' : (variance < 0 ? 'text-emerald-600' : 'text-slate-400')}`}>{variance > 0 ? `+${variance}d` : `${variance}d`}</span></TableCell>
+                      <TableCell>
+                        <select value={m.criticalPathStatus || "🟢 On Track"} onChange={e => updateMilestone(m.id, "criticalPathStatus", e.target.value)} className={`h-8 border rounded-sm text-[10px] font-bold px-1 w-full bg-white ${m.criticalPathStatus === '🔴 Critical Path Blocked' ? 'border-red-200 text-red-600 bg-red-50/50' : m.criticalPathStatus === '🟡 Delayed but Sub-Critical' ? 'border-amber-200 text-amber-600 bg-amber-50/30' : 'border-slate-200 text-emerald-600'}`}>
+                          <option value="🟢 On Track">🟢 On Track</option><option value="🟡 Delayed but Sub-Critical">🟡 Delayed but Sub-Critical</option><option value="🔴 Critical Path Blocked">🔴 Critical Path Blocked</option>
+                        </select>
+                      </TableCell>
+                      <TableCell><select value={m.status} onChange={e => updateMilestone(m.id, "status", e.target.value)} className="h-8 border border-slate-200 rounded-sm text-[10px] font-bold px-1 w-full bg-white"><option value="Planned">Planned</option><option value="In Progress">In Progress</option><option value="Complete">Complete</option><option value="Blocked">Blocked</option></select></TableCell>
+                      
+                      {/* DASHBOARD VISIBILITY TOGGLE */}
+                      <TableCell className="text-center">
+                        <Button 
+                          type="button"
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => handleToggleDashboardVisibility(m.id, !!m.showOnDashboard)}
+                          className={`h-7 text-[10px] font-bold tracking-tight rounded-sm px-2 cursor-pointer border ${m.showOnDashboard ? "bg-indigo-50 text-[#142E88] border-indigo-200 hover:bg-indigo-100" : "bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100"}`}
+                        >
+                          {m.showOnDashboard ? "👁️ On Executive UI" : "🙈 Hidden"}
+                        </Button>
+                      </TableCell>
+
+                      <TableCell><button onClick={() => removeMilestone(m.id)} className="text-red-400 hover:text-red-600 p-1 cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        )}
       </Card>
 
       {/* ROW 3: DEPENDENCY TRACKER & JOURNAL */}
