@@ -9,9 +9,10 @@ import { Plane, CloudSun, Building2, ArrowLeft, CheckCircle2, Plus, Trash2 } fro
 import { Textarea } from "@/components/ui/textarea"; 
 import Link from "next/link";
 
-// Clean Centralized Firebase Imports
+// Centralized Firebase Imports + Added Storage Tools
 import { db, auth } from "@/lib/firebase";
 import { collection, onSnapshot, addDoc } from "firebase/firestore";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage"; // 🟢 ADDED
 
 const STAGES = ["Construction", "Commission", "ORAT Trials", "Close-Out - Operations"];
 const WEATHER_OPTIONS = ["Raining", "Dry", "Hot", "Cold"];
@@ -112,6 +113,7 @@ export default function FieldIntakePage() {
     try {
       const currentUser = auth.currentUser?.email || "Kendall Aaron";
       const submissionTimestamp = new Date().toISOString();
+      const storageInstance = getStorage(); // Initialize storage
 
       // Get display name for the payload
       const activeProjectObj = projects.find(p => p.id === project);
@@ -136,15 +138,31 @@ export default function FieldIntakePage() {
 
       const docRef = await addDoc(collection(db, "field_observations"), fieldReportPayload);
 
-      // 2. Loop and bind the data explicitly to its unique sub-observation block
+      // 2. Loop, upload raw binary to cloud, and bind the cloud URL to its unique sub-observation block
       for (const obs of observationsList) {
+        let finalCloudImageUrl = "";
+
+        // If the user took or attached an active file, upload it to the cloud storage bucket first
+        if (obs.attachedFile) {
+          const fileExtension = obs.attachedFile.name.split('.').pop() || 'jpg';
+          const storagePath = `field_evidence/${docRef.id}-${obs.id}.${fileExtension}`;
+          const storageRef = ref(storageInstance, storagePath);
+          
+          // Upload raw binary payload
+          await uploadBytes(storageRef, obs.attachedFile);
+          
+          // Download the permanent cloud-resolved URL asset link
+          finalCloudImageUrl = await getDownloadURL(storageRef);
+        }
+
+        // Commit the sub-observation data row alongside its verified cloud image link
         await addDoc(collection(db, "field_observations", docRef.id, "sub_observations"), {
           observationId: obs.id,
           observationType: obs.type,
           priority: obs.priority,
           description: obs.description,
           createdAt: submissionTimestamp,
-          itemPhoto: obs.previewUrl || "" 
+          itemPhoto: finalCloudImageUrl // 🟢 Fixed: Saved the real storage link, not the local blob URL
         });
       }
 
