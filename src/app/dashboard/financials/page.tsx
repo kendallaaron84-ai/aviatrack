@@ -15,7 +15,7 @@ import {
 import { db, auth } from "@/lib/firebase"; 
 
 // Native Firebase Operations
-import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc } from "firebase/firestore";
+import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc, increment } from "firebase/firestore";
 
 export default function FinancialTrackingPage() {
   const { toast } = useToast();
@@ -135,49 +135,85 @@ export default function FinancialTrackingPage() {
 
   const handleLogTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ledgerForm.vendor) return;
+    // 🟢 FIXED: Changed to match your state variable 'selectedProject'
+    if (!selectedProject) {
+      toast({ variant: "destructive", title: "Error", description: "Please select an active project target first." });
+      return;
+    }
+
     setIsSubmitting(true);
 
-    try {
-      const currentUser = auth.currentUser?.email || "Kendall Aaron";
-      const timestamp = new Date().toISOString();
-      const parsedMaterial = parseFloat(ledgerForm.materialAmount) || 0;
-      const parsedLabor = parseFloat(ledgerForm.laborAmount) || 0;
-      const combinedTransactionAmount = parsedMaterial + parsedLabor;
+    // 1. Calculate transaction values
+    const matVal = parseFloat(ledgerForm.materialAmount) || 0;
+    const labVal = parseFloat(ledgerForm.laborAmount) || 0;
+    const totalTransactionValue = matVal + labVal;
 
-      const transactionPayload = {
+    if (totalTransactionValue <= 0) {
+      toast({ variant: "destructive", title: "Invalid Amount", description: "Please record an allocation value greater than $0." });
+      setIsSubmitting(false);
+      return;
+    }
+
+    // 2. Automate WBS allocation routing based on the selected category
+    const isInternalStaff = ledgerForm.category === "Labor";
+    const primaryWbs = isInternalStaff ? "itsd" : "contractor";
+
+    try {
+      // 3. Post a detailed historical audit line item to the subcollection log
+      // 🟢 FIXED: Changed to selectedProject
+      const actualsColRef = collection(db, "admin_projects", selectedProject, "monthly_actuals");
+      await addDoc(actualsColRef, {
         date: ledgerForm.date,
         vendor: ledgerForm.vendor,
         category: ledgerForm.category,
-        materialAmount: parsedMaterial,
-        laborAmount: parsedLabor,
-        amount: combinedTransactionAmount,
-        poNumber: ledgerForm.poNumber,
+        materialAmount: matVal,
+        laborAmount: labVal,
+        totalAllocated: totalTransactionValue,
+        wbsElement: primaryWbs,
         notes: ledgerForm.notes,
-        loggedBy: currentUser,
-        timestamp: timestamp
-      };
+        loggedAt: new Date().toISOString()
+      });
 
-      await addDoc(collection(db, "financials", selectedProject, "ledger"), transactionPayload);
+      // 4. Update the aggregate database balances on the project document
+      // 🟢 FIXED: Changed to selectedProject
+      const projectDocRef = doc(db, "admin_projects", selectedProject);
       
-      // EXECUTIVE ROLLOUP SYNC
-      const rollupDocRef = doc(db, "portfolio_rollups", selectedProject);
-      await setDoc(rollupDocRef, {
-        projectId: selectedProject,
-        projectName: activeProjectData?.name || selectedProject,
-        totalActualCost: totalSpent + combinedTransactionAmount,
-        evmMetrics: {
-          actualCost: totalSpent + combinedTransactionAmount,
-          plannedValue: currentBudget,
-          earnedValue: currentBudget - (variance - combinedTransactionAmount) > 0 ? currentBudget * 0.92 : currentBudget
-        }
-      }, { merge: true });
+      if (isInternalStaff) {
+        await updateDoc(projectDocRef, {
+          "actualsBreakdown.itsd": increment(totalTransactionValue),
+          totalActuals: increment(totalTransactionValue),
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        await updateDoc(projectDocRef, {
+          "actualsBreakdown.contractor": increment(totalTransactionValue),
+          totalActuals: increment(totalTransactionValue),
+          updatedAt: new Date().toISOString()
+        });
+      }
 
-      toast({ title: "Ledger Updated", description: "Transaction committed and pushed to Executive Board." });
-      setLedgerForm(prev => ({ ...prev, vendor: "", materialAmount: "", laborAmount: "", poNumber: "", notes: "" }));
-    } catch (err) {
-      toast({ variant: "destructive", title: "Error logging entry" });
-    } finally { setIsSubmitting(false); }
+      toast({
+        title: "Transaction Posted Successfully",
+        description: `Allocated $${totalTransactionValue.toLocaleString()} to WBS allocation: [${primaryWbs.toUpperCase()}].`
+      });
+
+      // Reset the input fields cleanly
+      setLedgerForm({
+        date: new Date().toISOString().split('T')[0],
+        vendor: "",
+        category: "Material/Equipment",
+        materialAmount: "",
+        laborAmount: "",
+        poNumber: "",
+        notes: ""
+      });
+      
+      // 🟢 FIXED: Removed fetchProjects() because your onSnapshot hook handles UI refreshes automatically!
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Posting Failed", description: err.message });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleInitializeProcurement = async (e: React.FormEvent) => {

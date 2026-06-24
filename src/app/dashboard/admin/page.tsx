@@ -111,15 +111,26 @@ export default function AdminPortalPage() {
         name: newProject.name,
         program: newProject.program,
         budget: parseFloat(newProject.budget || "0"),
-        wbs: newProject.wbs || "33-00000-00-00",
+        wbs: newProject.wbs || "33-00000-00-00", // Leaves your SAP Code intact
         latitude: parseFloat(newProject.lat || "29.53000"), 
         longitude: parseFloat(newProject.lng || "-98.46000"), 
         isUnplannedInjection: newProject.isUnplannedInjection,
-        weeklySummaryText: ""
+        weeklySummaryText: "",
+        
+        // 🟢 NEW: FINANCIAL ENGINE ALIGNMENT FOR TRACKING DUAL WBS ELEMENTS
+        totalActuals: 0,
+        actualsBreakdown: {
+          contractor: 0,
+          itsd: 0
+        },
+        createdAt: new Date().toISOString()
       });
-      toast({ title: "Project Injected", description: "Work package added across portfolio forms." });
+      
+      toast({ title: "Project Injected", description: "Work package added with dual-WBS tracking hooks." });
       setNewProject({ id: "", name: "", program: "TDP", budget: "", wbs: "", lat: "", lng: "", isUnplannedInjection: false });
-    } catch (e) { toast({ variant: "destructive", title: "Write Failed" }); }
+    } catch (e) { 
+      toast({ variant: "destructive", title: "Write Failed" }); 
+    }
   };
 
   // 🟢 UPGRADED: Writes to the specific PM Project Scope

@@ -8,9 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { auth, db } from "@/lib/firebase"; 
-import { collection, onSnapshot, doc, setDoc, getDocs } from "firebase/firestore";
-import { Folder, FileText, UploadCloud, Eye, ShieldAlert, Library, Layers, Maximize2, Minimize2, X } from "lucide-react";
+import { collection, onSnapshot, doc, setDoc, getDocs, updateDoc } from "firebase/firestore";
+import { Folder, FileText, UploadCloud, Eye, ShieldAlert, Library, Layers, Maximize2, Minimize2, X, Download } from "lucide-react";
 import { getPermissions } from "@/lib/security"; 
+import { getStorage, ref as storageRef, getDownloadURL, deleteObject, uploadBytes } from "firebase/storage";
+import { toast } from "@/hooks/use-toast";
 
 export default function AviationBlueprintVault() {
   const authInstance = auth; 
@@ -68,6 +70,54 @@ export default function AviationBlueprintVault() {
     return matchesTrack && matchesSearch;
   }); 
 
+  const handleArchiveBulletin = async (bulletinId: string, storageFilePath: string) => {
+  try {
+    // 1. Strip the heavy binary out of storage to stop the billing meter
+    if (storageFilePath) {
+      const storageRef = ref(storage, storageFilePath);
+      await deleteObject(storageRef);
+    }
+
+    // 2. Update Firestore to preserve the textual tracking record
+    const bulletinDocRef = doc(db, "admin_bulletins", bulletinId);
+    await updateDoc(bulletinDocRef, {
+      status: "Archived",
+      fileUrl: null, // Clear out the file path pointer
+      archivedAt: new Date().toISOString()
+    });
+
+    toast({ title: "Bulletin Archived", description: "Storage space reclaimed successfully." });
+  } catch (err: any) {
+    console.error(err);
+  }
+};
+
+  const handleViewLargeAttachment = async (storageFilePath: string) => {
+  try {
+    const storage = getStorage();
+    // Points directly to the file path inside your bucket (e.g., 'bulletins/drawing_326MB.pdf')
+    const fileRef = ref(storage, storageFilePath);
+    
+    // Generates a secure, direct-to-token Google API download string
+    const directUrl = await getDownloadURL(fileRef);
+    
+    // Create a client-side link element to force direct streaming download
+    const anchor = document.createElement('a');
+    anchor.href = directUrl;
+    anchor.target = '_blank'; // Opens in a new tab for native PDF rendering
+    anchor.setAttribute('download', ''); // Prompts a direct browser stream
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } catch (err: any) {
+    toast({
+      variant: "destructive",
+      title: "File Retrieval Failed",
+      description: "Could not establish a direct storage stream. Check your network connection."
+    });
+  }
+};
+
   // 1. Intercept selected files and open our custom design modal
   const handleFileSelectionIntercept = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -85,12 +135,18 @@ export default function AviationBlueprintVault() {
 
     const targetPackageId = masterPackageIdInput.trim().toUpperCase();
     const timestamp = new Date().toISOString();
+    const storage = getStorage();
 
     try {
-      // 🟢 HYDRATE SOURCE VIEWPORT TARGETS: Generate direct high-resolution render keys from the files array
-      const initialMasterUrl = pendingFiles[0] ? URL.createObjectURL(pendingFiles[0]) : "";
+      // 1. Upload the primary master file first to get the envelope URL
+      const masterFile = pendingFiles[0];
+      const masterStoragePath = `bulletins/${targetPackageId}/${masterFile.name}`;
+      const masterRef = storageRef(storage, masterStoragePath);
+      
+      await uploadBytes(masterRef, masterFile);
+      const masterCloudUrl = await getDownloadURL(masterRef);
 
-      // Initialize or Update the Master Parent Document Envelope
+      // 2. Initialize or Update the Master Parent Document Envelope in Firestore
       const parentDocRef = doc(db, "project_documentation", targetPackageId);
       await setDoc(parentDocRef, {
         docId: targetPackageId,
@@ -99,25 +155,30 @@ export default function AviationBlueprintVault() {
         programTrack: activeTab, 
         uploadedAt: timestamp,
         type: "Bulletin", 
-        fileUrl: initialMasterUrl, // Stores fluid local object access URL for primary viewer rendering
+        fileUrl: masterCloudUrl, // Permanent Cloud Link
+        storagePath: masterStoragePath, // Save path for archival deletion later
         isLatest: true 
       }, { merge: true });
 
-      // Loop and Inject each uploaded asset as an independent child record
+      // 3. Loop and Inject each uploaded asset as an independent child record
       for (let i = 0; i < pendingFiles.length; i++) {
         const file = pendingFiles[i];
         const sanitizedFileId = file.name.replace(/\.[^/.]+$/, "").toUpperCase();
         
-        // 🟢 RUN FLUID BLOB REGISTRY HYDRATION
-        const functionalBlobUrl = URL.createObjectURL(file);
+        // Push child file to Firebase Storage
+        const childStoragePath = `bulletins/${targetPackageId}/${file.name}`;
+        const childRef = storageRef(storage, childStoragePath);
+        await uploadBytes(childRef, file);
+        const childCloudUrl = await getDownloadURL(childRef);
         
+        // Record child file in Firestore
         const childDocRef = doc(db, "project_documentation", targetPackageId, "package_files", sanitizedFileId);
-        
         await setDoc(childDocRef, {
           fileName: file.name,
           documentType: file.name.toLowerCase().includes("drawing") ? "Drawing" : "Specification/Narrative",
           uploadedAt: timestamp,
-          fileUrl: functionalBlobUrl // Restores direct functional package file visibility
+          fileUrl: childCloudUrl, 
+          storagePath: childStoragePath
         });
       }
 
@@ -125,9 +186,13 @@ export default function AviationBlueprintVault() {
       setPendingFiles([]);
       setMasterPackageIdInput("");
       
-      alert(`Package Successfully Synchronized: Attached ${pendingFiles.length} files to ${targetPackageId}`);
+      toast({
+        title: "Synchronization Complete",
+        description: `Attached ${pendingFiles.length} files securely to ${targetPackageId}`
+      });
     } catch (err: any) {
       console.error("Failed to commit package bundle entries:", err);
+      toast({ variant: "destructive", title: "Upload Failed", description: err.message });
     }
   };
 
@@ -317,18 +382,27 @@ export default function AviationBlueprintVault() {
                     </span>
                     <div className="flex flex-col gap-1.5">
                       {associatedFiles.map((file) => (
-                        <button
-                          key={file.id}
-                          type="button"
-                          onClick={() => setSelectedDrawingUrl(file.fileUrl)}
-                          className={`text-left p-2 text-xs font-medium rounded-xs border transition-all cursor-pointer ${
-                            selectedDrawingUrl === file.fileUrl
-                              ? "bg-[#142E88] border-[#142E88] text-white font-bold"
-                              : "bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
-                          }`}
-                        >
-                          📄 {file.fileName}
-                        </button>
+                        <div key={file.id} className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedDrawingUrl(file.fileUrl)}
+                            className={`flex-1 text-left p-2 text-xs font-medium rounded-xs border transition-all cursor-pointer ${
+                              selectedDrawingUrl === file.fileUrl
+                                ? "bg-[#142E88] border-[#142E88] text-white font-bold"
+                                : "bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
+                            }`}
+                          >
+                            📄 {file.fileName}
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => handleViewLargeAttachment(file.storagePath)}
+                            title="Direct Native Download (Bypass Viewer)"
+                            className="px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xs border border-slate-300 transition-colors cursor-pointer flex items-center justify-center"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
