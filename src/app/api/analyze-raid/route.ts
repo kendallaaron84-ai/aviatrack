@@ -1,6 +1,6 @@
 // File: src/app/api/analyze-raid/route.ts
 
-// 🆕 1. FORCE THE ROUTE TO BE TRULY DYNAMIC (Prevents page data collection loops)
+// 🟢 FORCE DYNAMIC TO BYPASS BUILD-TIME EVALUATION
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
@@ -8,38 +8,34 @@ import { GoogleGenAI } from "@google/genai"; // Standard Google AI SDK
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-  ? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n')
-  : undefined;
-
-// Graceful fallback initialization using your existing individual keys
-if (getApps().length === 0) {
-  if (!clientEmail || !privateKey || !projectId) {
-    console.warn("⚠️ Firebase Admin credentials missing or unmapped during build verification check.");
-  } else {
-    initializeApp({
-      credential: cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-    });
-    console.log("🚀 Firebase Admin successfully initialized.");
-  }
-}
-
 export async function POST() {
   try {
-    // 🆕 2. Defensive initialization validation right inside your execution call
+    // 🔐 ENCAPSULATION SAFEGUARD: Move variable extraction completely inside the request runtime context
+    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+    const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+      ? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n')
+      : undefined;
+
+    // Graceful initialization wrapped securely inside the runtime execution stack
     if (getApps().length === 0) {
-      throw new Error("Firebase Admin SDK failed to initialize. Check environment secrets configuration.");
+      if (!clientEmail || !privateKey || !projectId) {
+        throw new Error("Missing critical Firebase Admin environment variables at runtime.");
+      }
+      
+      initializeApp({
+        credential: cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      });
+      console.log("🚀 Firebase Admin successfully initialized at runtime.");
     }
-    
-    // Resolve database instance context safely at runtime
+
+    // Initialize services safely now that authentication is guaranteed
     const adminDb = getFirestore();
-    const ai = new GoogleGenAI(); // Setup your AI instance layer here
+    const ai = new GoogleGenAI();
 
     // 🟢 1. Fetch your dynamic instruction override text from Firestore
     const configSnap = await adminDb.collection("admin_settings").doc("risk_profile").get();
@@ -47,7 +43,7 @@ export async function POST() {
       ? configSnap.data()?.riskPrompt 
       : "You are an expert airport systems construction risk analyzer.";
 
-    // 🟢 2. Pull the raw material (e.g., Sub-Observations with type "Risk")
+    // 🟢 2. Pull the material (e.g., Sub-Observations with type "Risk")
     const snapshot = await adminDb.collectionGroup("sub_observations")
       .where("observationType", "==", "Risk")
       .limit(10) // Chunk batch processing
