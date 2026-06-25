@@ -8,11 +8,12 @@ import { useToast } from "@/hooks/use-toast";
 import { Plane, CloudSun, Building2, ArrowLeft, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea"; 
 import Link from "next/link";
+import { getAuth } from "firebase/auth";
 
 // Centralized Firebase Imports + Added Storage Tools
 import { db, auth } from "@/lib/firebase";
 import { collection, onSnapshot, addDoc } from "firebase/firestore";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage"; // 🟢 ADDED
+import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable } from "firebase/storage";
 
 const STAGES = ["Construction", "Commission", "ORAT Trials", "Close-Out - Operations"];
 const WEATHER_OPTIONS = ["Raining", "Dry", "Hot", "Cold"];
@@ -24,7 +25,7 @@ export default function FieldIntakePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmittedSuccessfully, setIsSubmittedSuccessfully] = useState(false);
 
-  // 🟢 NEW: Dynamic PM Workspace Data Streams
+  // Dynamic PM Workspace Data Streams
   const [projects, setProjects] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [personnel, setPersonnel] = useState<any[]>([]);
@@ -40,11 +41,12 @@ export default function FieldIntakePage() {
   const [sector, setSector] = useState("");
   const [selectedPersonnel, setSelectedPersonnel] = useState<string[]>([]);
 
+  // Multi-photo schema initialization
   const [observationsList, setObservationsList] = useState<any[]>([
-    { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFile: null, previewUrl: "" }
+    { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }
   ]);
 
-  // 🟢 1. Stream Master Admin Project Directory
+  // 1. Stream Master Admin Project Directory
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "admin_projects"), (snap) => {
       setProjects(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -52,7 +54,7 @@ export default function FieldIntakePage() {
     return () => unsub();
   }, []);
 
-  // 🟢 2. Filter available projects by selected Program Track (TDP vs CIP)
+  // 2. Filter available projects by selected Program Track (TDP vs CIP)
   const filteredProjects = projects.filter(p => p.program === program);
 
   // Auto-select the first project in the list when the program changes
@@ -65,7 +67,7 @@ export default function FieldIntakePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [program, projects]);
 
-  // 🟢 3. Cascade Locations and Personnel based on Active Project Target
+  // 3. Cascade Locations and Personnel based on Active Project Target
   useEffect(() => {
     if (!project) {
       setLocations([]);
@@ -78,7 +80,6 @@ export default function FieldIntakePage() {
     });
 
     const unsubPers = onSnapshot(collection(db, "admin_projects", project, "personnel"), (snap) => {
-      // Automatically filters out archived/inactive personnel!
       const activePersonnel = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => p.active !== false);
       setPersonnel(activePersonnel);
     });
@@ -86,14 +87,52 @@ export default function FieldIntakePage() {
     return () => { unsubLocs(); unsubPers(); };
   }, [project]);
 
+  // 📋 SAFEGUARD: Local Storage Autosave Draft Layer
+  useEffect(() => {
+    const savedDraft = localStorage.getItem("field_observation_draft");
+    if (savedDraft) {
+      try {
+        const parsed = JSON.parse(savedDraft);
+        if (Array.isArray(parsed)) setObservationsList(parsed);
+      } catch (e) {
+        console.error("Failed to re-hydrate field draft state", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (observationsList.length > 0) {
+      // Stripping out raw File instances to avoid local storage serialization crashes
+      const cleanDraft = observationsList.map(obs => ({
+        ...obs,
+        attachedFiles: [] 
+      }));
+      localStorage.setItem("field_observation_draft", JSON.stringify(cleanDraft));
+    }
+  }, [observationsList]);
+
   const handlePersonnelToggle = (name: string) => {
     setSelectedPersonnel(prev => 
       prev.includes(name) ? prev.filter(p => p !== name) : [...prev, name]
     );
   };
 
-  const addObservationItem = () => {
-    setObservationsList([...observationsList, { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFile: null, previewUrl: "" }]);
+  const addObservationItem = async () => {
+    // 🔐 SAFEGUARD: Reset the 1-hour authentication timeout wall when adding entries
+    try {
+      const authInstance = getAuth();
+      if (authInstance.currentUser) {
+        await authInstance.currentUser.getIdToken(true);
+        console.log("Session validity token extended successfully.");
+      }
+    } catch (e) {
+      console.warn("Utilizing session authentication token cache.");
+    }
+
+    setObservationsList([
+      ...observationsList, 
+      { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }
+    ]);
   };
 
   const removeObservationItem = (id: string) => {
@@ -111,17 +150,25 @@ export default function FieldIntakePage() {
     setIsSubmitting(true);
 
     try {
-      const currentUser = auth.currentUser?.email || "Kendall Aaron";
-      const submissionTimestamp = new Date().toISOString();
-      const storageInstance = getStorage(); // Initialize storage
+      const authInstance = getAuth();
+      const currentUser = authInstance.currentUser;
 
-      // Get display name for the payload
+      if (!currentUser) {
+        throw new Error("No active session found. Please re-authenticate.");
+      }
+
+      // 🔐 SAFEGUARD: Reset the 1-hour expiration barrier right at submission execution
+      await currentUser.getIdToken(true);
+
+      const emailUser = currentUser.email || "Kendall Aaron";
+      const submissionTimestamp = new Date().toISOString();
+      const storageInstance = getStorage();
+
       const activeProjectObj = projects.find(p => p.id === project);
       const projectDisplayName = activeProjectObj ? activeProjectObj.name : project;
 
-      // 1. Core parent document properties
       const fieldReportPayload = {
-        submittedBy: currentUser,
+        submittedBy: emailUser,
         submittedAt: submissionTimestamp,
         program,
         projectId: project,
@@ -138,51 +185,66 @@ export default function FieldIntakePage() {
 
       const docRef = await addDoc(collection(db, "field_observations"), fieldReportPayload);
 
-      // 2. Loop, upload raw binary to cloud, and bind the cloud URL to its unique sub-observation block
       for (const obs of observationsList) {
-        let finalCloudImageUrl = "";
+        const cloudImageUrls: string[] = [];
 
-        // If the user took or attached an active file, upload it to the cloud storage bucket first
-        if (obs.attachedFile) {
-          const fileExtension = obs.attachedFile.name.split('.').pop() || 'jpg';
-          const storagePath = `field_evidence/${docRef.id}-${obs.id}.${fileExtension}`;
-          const storageRef = ref(storageInstance, storagePath);
-          
-          // Upload raw binary payload
-          await uploadBytes(storageRef, obs.attachedFile);
-          
-          // Download the permanent cloud-resolved URL asset link
-          finalCloudImageUrl = await getDownloadURL(storageRef);
+        // Chunked Resumable Upload pipeline for multiple photos
+        if (obs.attachedFiles && obs.attachedFiles.length > 0) {
+          for (const file of obs.attachedFiles) {
+            const fileExtension = file.name.split('.').pop() || 'jpg';
+            const storagePath = `field_evidence/${docRef.id}-${obs.id}-${crypto.randomUUID()}.${fileExtension}`;
+            const storageRefInstance = storageRef(storageInstance, storagePath);
+            
+            const uploadTask = uploadBytesResumable(storageRefInstance, file);
+
+            const downloadUrl = await new Promise<string>((resolve, reject) => {
+              uploadTask.on(
+                "state_changed",
+                null,
+                (error) => reject(error),
+                async () => {
+                  const url = await getDownloadURL(uploadTask.snapshot.ref);
+                  resolve(url);
+                }
+              );
+            });
+            cloudImageUrls.push(downloadUrl);
+          }
         }
 
-        // Commit the sub-observation data row alongside its verified cloud image link
         await addDoc(collection(db, "field_observations", docRef.id, "sub_observations"), {
           observationId: obs.id,
           observationType: obs.type,
           priority: obs.priority,
           description: obs.description,
           createdAt: submissionTimestamp,
-          itemPhoto: finalCloudImageUrl // 🟢 Fixed: Saved the real storage link, not the local blob URL
+          itemPhotos: cloudImageUrls
         });
       }
 
+      localStorage.removeItem("field_observation_draft"); 
       setIsSubmittedSuccessfully(true);
       toast({ title: "Report Saved", description: "All observations pushed to the PM verification queue." });
+
     } catch (err: any) {
-      toast({ variant: "destructive", title: "Submission Failed", description: err.message });
+      console.error("Field submission pipeline crash:", err);
+      toast({ 
+        variant: "destructive", 
+        title: "Submission Failed", 
+        description: err.message || "Network packet dropout encountered." 
+      });
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const resetFormState = () => {
-    setObservationsList([{ id: crypto.randomUUID(), type: "General", priority: "Low", description: "" }]);
+    setObservationsList([{ id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }]);
     setSector("");
     setSelectedPersonnel([]);
     setIsSubmittedSuccessfully(false);
   };
 
-  // POST-SUBMISSION SUCCESS VIEW LAYER
   if (isSubmittedSuccessfully) {
     return (
       <div className="min-h-[80vh] flex items-center justify-center p-4">
@@ -225,7 +287,8 @@ export default function FieldIntakePage() {
         </Button>
       </div>
 
-      <form onSubmit={handleFormSubmission} className="space-y-6">
+      {/* INTERACTIVE INPUT FORM LAYER */}
+      <form onSubmit={handleFormSubmission} className="space-y-6 print:hidden">
         <Card className="rounded-none border shadow-none bg-white">
           <CardHeader className="bg-slate-50/60 border-b py-3">
             <CardTitle className="text-xs font-bold uppercase tracking-wider text-slate-700">1. Report Parameters Header</CardTitle>
@@ -283,7 +346,6 @@ export default function FieldIntakePage() {
               </div>
             </div>
 
-            {/* 🟢 FIXED: DYNAMIC PERSONNEL LOG */}
             <div className="md:col-span-2 border rounded-sm p-4 bg-slate-50/50">
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2 text-slate-500">Present at Site Log</label>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto p-2 bg-white border border-slate-200 rounded-sm">
@@ -358,68 +420,91 @@ export default function FieldIntakePage() {
                   </select>
                 </div>
 
-                {/* FIELD DESCRIPTION NOTES TEXTAREA RESIDES HERE */}
                 <div className="md:col-span-2">
                   <label className="block text-xs font-bold text-slate-800 mb-1">Field Description Notes</label>
                   <Textarea value={obs.description} onChange={e => updateObservationField(obs.id, "description", e.target.value)} placeholder="Describe active anomalies..." rows={3} className="bg-white rounded-none border-slate-300 shadow-none resize-none text-sm placeholder:text-slate-300" />
                 </div>
 
-                {/* 🟢 ENTERPRISE CAMERA & GALLERY ATTACHMENT HUB 🟢 */}
                 <div className="md:col-span-2 pt-2 space-y-2">
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                    Evidence Photo Documentation
+                    Evidence Photo Documentation (Multiple Images Supported)
                   </label>
                   
-                  <div className="flex items-center gap-4 bg-slate-50 p-3 border rounded-sm">
-                    {/* HIDDEN INHERENT MEDIA REGISTER INPUT */}
-                    <input
-                      type="file"
-                      id={`file-capture-${obs.id}`}
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        
-                        // Construct an instant local preview blob URL so tablet users verify what they shot
-                        const localBlobUrl = URL.createObjectURL(file);
-                        
-                        // Sync values cleanly straight into the matching state object row
-                        setObservationsList(observationsList.map(item => 
-                          item.id === obs.id ? { ...item, attachedFile: file, previewUrl: localBlobUrl } : item
-                        ));
-                      }}
-                    />
+                  <div className="bg-slate-50 p-4 border rounded-sm space-y-3">
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="file"
+                        id={`file-capture-${obs.id}`}
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          const chosenFiles = e.target.files ? Array.from(e.target.files) : [];
+                          if (chosenFiles.length === 0) return;
+                          
+                          const newPreviews = chosenFiles.map(file => URL.createObjectURL(file));
 
-                    {/* TOUCH TARGET DESIGN BUTTON FOR TOUCHSCREENS */}
-                    <button
-                      type="button"
-                      onClick={() => document.getElementById(`file-capture-${obs.id}`)?.click()}
-                      className="flex items-center justify-center gap-2 border border-dashed border-slate-300 bg-white hover:bg-slate-100 px-4 py-2.5 rounded-sm text-xs font-bold text-slate-700 font-mono transition-colors cursor-pointer"
-                    >
-                      <svg className="h-4 w-4 text-[#142E88]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                      </svg>
-                      {obs.attachedFile ? "Change Photo" : "Tap to Launch Camera / Attach"}
-                    </button>
+                          setObservationsList(observationsList.map(item => {
+                            if (item.id === obs.id) {
+                              return {
+                                ...item,
+                                attachedFiles: [...(item.attachedFiles || []), ...chosenFiles],
+                                previewUrls: [...(item.previewUrls || []), ...newPreviews]
+                              };
+                            }
+                            return item;
+                          }));
+                        }}
+                      />
 
-                    {/* REAL-TIME VISUAL COUNTERPART CARD */}
-                    {obs.previewUrl ? (
-                      <div className="relative h-12 w-16 border rounded bg-slate-900 overflow-hidden shrink-0 ml-auto">
-                        <img src={obs.previewUrl} alt="Thumbnail Preview" className="w-full h-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => setObservationsList(observationsList.map(item => 
-                            item.id === obs.id ? { ...item, attachedFile: null, previewUrl: "" } : item
-                          ))}
-                          className="absolute inset-0 bg-black/60 opacity-0 hover:opacity-100 flex items-center justify-center text-white text-[10px] font-bold transition-opacity cursor-pointer"
-                        >
-                          Remove
-                        </button>
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById(`file-capture-${obs.id}`)?.click()}
+                        className="flex items-center justify-center gap-2 border border-dashed border-slate-300 bg-white hover:bg-slate-100 px-4 py-2.5 rounded-sm text-xs font-bold text-slate-700 font-mono transition-colors cursor-pointer"
+                      >
+                        <svg className="h-4 w-4 text-[#142E88]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        Tap to Capture / Attach Photos
+                      </button>
+
+                      <span className="text-[11px] text-slate-400 font-mono ml-auto">
+                        {(obs.attachedFiles?.length || 0)} Attached
+                      </span>
+                    </div>
+
+                    {obs.previewUrls && obs.previewUrls.length > 0 ? (
+                      <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200">
+                        {obs.previewUrls.map((url: string, idx: number) => (
+                          <div key={idx} className="relative h-14 w-20 border rounded bg-slate-900 overflow-hidden shrink-0 group">
+                            <img src={url} alt={`Preview ${idx + 1}`} className="w-full h-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                URL.revokeObjectURL(url);
+                                setObservationsList(observationsList.map(item => {
+                                  if (item.id === obs.id) {
+                                    return {
+                                      ...item,
+                                      attachedFiles: item.attachedFiles.filter((_: any, fIdx: number) => fIdx !== idx),
+                                      previewUrls: item.previewUrls.filter((_: any, pIdx: number) => pIdx !== idx)
+                                    };
+                                  }
+                                  return item;
+                                }));
+                              }}
+                              className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[9px] font-bold transition-opacity cursor-pointer"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     ) : (
-                      <span className="text-[11px] text-slate-400 italic font-medium ml-auto">No image bound to observation slot.</span>
+                      <div className="text-[11px] text-slate-400 italic pt-2 border-t border-dashed text-center">
+                        No image markers bound to this observation window yet.
+                      </div>
                     )}
                   </div>
                 </div>
@@ -434,6 +519,59 @@ export default function FieldIntakePage() {
           </Button>
         </div>
       </form>
+
+      {/* 🖨️ STATIC COMPLIANT PRINT LAYER FOR FIELD OBSERVATION FORMS */}
+      <div className="hidden print:block w-full max-w-5xl mx-auto p-4 bg-white text-black text-sm">
+        <div className="border-b pb-4 mb-6 flex justify-between items-end">
+          <div>
+            <h1 className="text-2xl font-black uppercase tracking-tight">Field Observation Report Form</h1>
+            <p className="text-xs text-slate-500 font-mono">System Source: AviaITrack Core Compliance Engine</p>
+          </div>
+          <div className="text-right text-xs font-mono">
+            <p><strong>Program Track:</strong> {program}</p>
+            <p><strong>Project Target:</strong> {project}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 border p-4 bg-slate-50 mb-6 rounded-sm">
+          <p><strong>Execution Phase Stage:</strong> {stage}</p>
+          <p><strong>Worksite Location Marker:</strong> {location || "Not Provided"}</p>
+          <p><strong>Facility Environment Context:</strong> {isExterior ? `Exterior (${weather})` : "Controlled Facility Interior"}</p>
+          <p><strong>Structural Marker Designation:</strong> {buildingLevel} / Sector {sector || "00"}</p>
+          <p className="col-span-2"><strong>Personnel Checklist Present at Site:</strong> {selectedPersonnel.join(", ") || "None Logged"}</p>
+        </div>
+
+        <h3 className="text-md font-bold uppercase tracking-wider mb-3 pb-1 border-b">Observation Matrix Summary Log</h3>
+        
+        <div className="space-y-6">
+          {observationsList.map((obs, index) => (
+            <div key={obs.id} className="border p-4 rounded-sm bg-white page-break-inside-avoid">
+              <div className="flex justify-between items-center bg-slate-100 p-2 mb-3 border font-mono text-xs font-bold">
+                <span>OBSERVATION SLOT ENTRY #{index + 1}</span>
+                <span className="uppercase text-slate-600">Priority: {obs.priority} | Type: {obs.type}</span>
+              </div>
+              <p className="text-sm border p-3 bg-slate-50/50 min-h-[50px] whitespace-pre-wrap rounded-sm mb-3">
+                {obs.description || "No specific logging narrative descriptions recorded."}
+              </p>
+
+              {obs.previewUrls && obs.previewUrls.length > 0 && (
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  {obs.previewUrls.map((url: string, pIdx: number) => (
+                    <div key={pIdx} className="border p-2 rounded bg-white shadow-sm flex flex-col justify-between">
+                      <img src={url} alt={`Evidence Track ${pIdx + 1}`} className="w-full h-44 object-cover rounded" />
+                      <div className="mt-2">
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 underline font-mono block truncate">
+                          Open High-Res Original Source [Photo {pIdx + 1}]
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
