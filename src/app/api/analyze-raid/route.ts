@@ -95,11 +95,26 @@ export async function POST() {
     const batch = adminDb.batch();
     for (const item of items) {
       const raidRef = adminDb.collection("raid_matrix").doc();
+      
+      // Define if the item falls within the technical scope of the IT Consultant
+      const assignedOwner = item.classification === "Dependency" || item.classification === "Issue" 
+        ? "IT Consultant" 
+        : "ORAT Team";
+        
+      const isItOwned = assignedOwner === "IT Consultant";
+
       batch.set(raidRef, {
         ...item,
         status: "Identified",
-        assignedOwner: "Unassigned",
+        assignedOwner: assignedOwner,
+        isItOwned: isItOwned, // 🏢 Controls the Consultant working view vs Leadership view filter logic
         dispositionNotes: "",
+        historicalComments: [],
+        
+        // 🔗 Traceability Link Hooks
+        sourceType: "Field Report", 
+        sourceReferenceId: item.sourceReferenceId || "", // Automatically carries over the Firestore Parent Document ID
+        sourceContextLink: "Div 27 / Cable Pathways Submittal", // Structural link mapping rule default
         analyzedAt: new Date().toISOString(),
       });
     }
