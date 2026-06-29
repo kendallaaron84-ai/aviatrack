@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, ReferenceLine, ResponsiveContainer, Tooltip } from "recharts";
+import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, ResponsiveContainer, Tooltip } from "recharts";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot, query, doc, updateDoc } from "firebase/firestore";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -15,9 +15,12 @@ import { kmeans } from "ml-kmeans";
 
 // Agnostic Operational Parametric Normalization Weights
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
-const IMPACT_WEIGHTS: Record<string, number> = { Critical: 1.0, Mandatory: 0.85, High: 0.65, Medium: 0.45, Low: 0.25, "N/A": 0.0 };
+const IMPACT_WEIGHTS: Record<string, number> = { Critical: 1.0, Mandatory: 0.8, High: 0.6, Medium: 0.4, Low: 0.2, "N/A": 0.0 };
 
-// Dropdown configuration matrices for interactive PM reviews
+// Reverse lookups for axis tick rendering labels
+const PROBABILITY_TICKS = [0, 1, 2, 3, 4];
+const IMPORTANCE_TICKS = ["Low", "Medium", "High", "Mandatory", "Critical"];
+
 const ROAM_CATEGORIES = ["New / Unassigned", "Owned", "Mitigated", "Accepted", "Resolved"];
 const PROBABILITY_LEVELS = [0, 1, 2, 3, 4];
 const IMPORTANCE_LEVELS = ["Critical", "Mandatory", "High", "Medium", "Low", "N/A"];
@@ -49,7 +52,7 @@ export default function RiskClusterDashboard() {
     try {
       const res = await fetch("/api/analyze-raid", { method: "POST" });
       const data = await res.json();
-      alert(`AI Sync Complete! Processed ${data.processedCount || 0} field observations into the RAID matrix.`);
+      alert(`AI Sync Complete! Processed ${data.processedCount || 0} field observations strictly as Risks.`);
     } catch (err) {
       console.error(err);
       alert("Failed to connect to the AI processing pipeline.");
@@ -58,14 +61,13 @@ export default function RiskClusterDashboard() {
     }
   };
 
-  // 🔌 LIVE FIRESTORE STREAM DATA SYNC HOOK
+  // LIVE FIRESTORE STREAM DATA SYNC HOOK
   useEffect(() => {
     const q = query(collection(db, "raid_matrix"));
     const unsub = onSnapshot(q, (snap) => {
       const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setRaidqItems(items);
       
-      // Keep selected details view fresh during live changes
       if (selectedItem) {
         const freshTarget = items.find(i => i.id === selectedItem.id);
         if (freshTarget) setSelectedItem(freshTarget);
@@ -74,7 +76,7 @@ export default function RiskClusterDashboard() {
     return () => unsub();
   }, [selectedItem]);
 
-  // Filter items dynamically by time horizon to maintain zero clutter
+  // Filter items dynamically by time horizon
   const filteredTimelineItems = useMemo(() => {
     const now = new Date();
     return raidqItems.filter(item => {
@@ -85,45 +87,31 @@ export default function RiskClusterDashboard() {
     });
   }, [raidqItems, daysHorizon]);
 
-  // Compute K-Means Client Side Coordinate Mapping
+  // Compute Coordinate Mapping
   const clusteredData = useMemo(() => {
     if (filteredTimelineItems.length === 0) return [];
 
     const vectors = filteredTimelineItems.map(item => [
-      IMPACT_WEIGHTS[item.importance] || IMPACT_WEIGHTS[item.impactLevel] || 0.0, // Graceful mapping fallback
+      IMPACT_WEIGHTS[item.importance] || IMPACT_WEIGHTS[item.impactLevel] || 0.2, 
       PROBABILITY_WEIGHTS[Number(item.probability)] || 0.0
     ]);
 
-    try {
-      const kValue = Math.min(4, filteredTimelineItems.length);
-      const kMeansResult = kmeans(vectors, kValue, {});
-      
-      return filteredTimelineItems.map((item, idx) => ({
-        ...item,
-        x: vectors[idx][0],
-        y: vectors[idx][1],
-        clusterIdx: kMeansResult.clusters[idx],
-        nodeColor: STATUS_COLORS[item.roamCategory] || STATUS_COLORS[item.status] || "#EF4444"
-      }));
-    } catch (e) {
-      return filteredTimelineItems.map((item, idx) => ({
-        ...item, x: vectors[idx][0], y: vectors[idx][1], nodeColor: "#EF4444"
-      }));
-    }
+    return filteredTimelineItems.map((item, idx) => ({
+      ...item,
+      x: vectors[idx][0],
+      y: vectors[idx][1],
+      nodeColor: STATUS_COLORS[item.roamCategory] || STATUS_COLORS[item.status] || "#EF4444"
+    }));
   }, [filteredTimelineItems]);
 
-  // 🆕 DYNAMIC UPDATE INTERCEPT HANDLER
   const handleUpdateParam = async (field: string, value: any) => {
     if (!selectedItem) return;
     try {
       const docRef = doc(db, "raid_matrix", selectedItem.id);
-      
-      // Map cross-field status properties automatically if changing the ROAM assignment
       const patches: Record<string, any> = { [field]: value };
       if (field === "roamCategory") {
         patches.status = value === "New / Unassigned" ? "Identified" : value;
       }
-
       await updateDoc(docRef, patches);
     } catch (err) {
       console.error("Failed to commit matrix updates:", err);
@@ -156,8 +144,8 @@ export default function RiskClusterDashboard() {
         <div className="flex items-center gap-3">
           <ShieldAlert className="h-6 w-6 text-[#142E88]" />
           <div>
-            <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">Workbench RAIDQ Threat Analysis</h1>
-            <p className="text-xs text-slate-500 font-mono">Granular Site Walk Matrix Control Layer</p>
+            <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">Workbench Risk Exposure Workspace</h1>
+            <p className="text-xs text-slate-500 font-mono">Dynamic Probability & Impact Registry</p>
           </div>
         </div>
 
@@ -194,27 +182,67 @@ export default function RiskClusterDashboard() {
         <div className="space-y-6">
           {/* THE CANVAS SCATTER GRID CHART */}
           <Card className="rounded-none border-slate-200 bg-white shadow-xs relative">
-            <CardHeader className="border-b border-slate-100 py-3 bg-slate-50/60">
+            <CardHeader className="border-b border-slate-100 py-3 bg-slate-50/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <CardTitle className="text-xs font-bold font-mono uppercase tracking-wider text-slate-600 flex items-center gap-2">
-                <Layers className="h-4 w-4 text-slate-400" /> K-Means Algorithmic Threat Space Model (ROAM Boundaries)
+                <Layers className="h-4 w-4 text-slate-400" /> Dynamic Risk Scatter Mapping Grid
               </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 relative h-[520px]">
               
-              {/* BACKPLANE QUADRANT LABELS */}
-              <div className="absolute inset-0 p-8 flex flex-col justify-between pointer-events-none text-[11px] font-mono font-black text-slate-400 tracking-widest z-0">
-                <div className="flex justify-between"><span>Resolved (Top Left)</span><span>Accepted (Top Right)</span></div>
-                <div className="flex justify-between"><span>Owned (Bottom Left)</span><span>Mitigated (Bottom Right)</span></div>
+              {/* 🟢 NEW VISUAL LEGEND SUB-ROW BAR */}
+              <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono font-bold">
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#EF4444]" /> New / Unassigned</div>
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#1A2D83]" /> Owned</div>
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#883AE1]" /> Mitigated</div>
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#3B82F6]" /> Accepted</div>
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#10B981]" /> Resolved</div>
               </div>
+            </CardHeader>
+            <CardContent className="p-6 h-[540px]">
 
               <ResponsiveContainer width="100%" height="100%">
-                <ScatterChart margin={{ top: 25, right: 25, bottom: 25, left: 25 }}>
-                  <XAxis type="number" dataKey="x" domain={[0, 1.05]} hide />
-                  <YAxis type="number" dataKey="y" domain={[0, 1.05]} hide />
-                  <ZAxis type="number" range={[140, 160]} />
+                <ScatterChart margin={{ top: 20, right: 30, bottom: 35, left: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
                   
-                  <ReferenceLine x={0.5} stroke="#E2E8F0" strokeWidth={1.5} strokeDasharray="3 3" />
-                  <ReferenceLine y={0.5} stroke="#E2E8F0" strokeWidth={1.5} strokeDasharray="3 3" />
+                  {/* X-AXIS: IMPORTANCE (0.0 to 1.0 Internal Normalization Map) */}
+                  <XAxis 
+                    type="number" 
+                    dataKey="x" 
+                    domain={[0, 1.05]} 
+                    tickLine={false}
+                    axisLine={{ stroke: '#CBD5E1' }}
+                    ticks={[0.2, 0.4, 0.6, 0.8, 1.0]}
+                    tickFormatter={(val) => {
+                      if (val === 0.2) return "Low";
+                      if (val === 0.4) return "Medium";
+                      if (val === 0.6) return "High";
+                      if (val === 0.8) return "Mandatory";
+                      if (val === 1.0) return "Critical";
+                      return "";
+                    }}
+                    label={{ value: "Risk Importance / Impact Vector ──>", position: "bottom", offset: 15, className: "font-mono text-[10px] font-black uppercase text-slate-400 tracking-wider" }}
+                    className="font-mono text-[10px] font-bold text-slate-500"
+                  />
+                  
+                  {/* Y-AXIS: PROBABILITY (0.0 to 1.0 Internal Normalization Map) */}
+                  <YAxis 
+                    type="number" 
+                    dataKey="y" 
+                    domain={[-0.05, 1.05]} 
+                    tickLine={false}
+                    axisLine={{ stroke: '#CBD5E1' }}
+                    ticks={[0.0, 0.25, 0.50, 0.75, 1.0]}
+                    tickFormatter={(val) => {
+                      if (val === 0.0) return "0 (None)";
+                      if (val === 0.25) return "1";
+                      if (val === 0.50) return "2";
+                      if (val === 0.75) return "3";
+                      if (val === 1.0) return "4 (Critical)";
+                      return "";
+                    }}
+                    label={{ value: "◄── Probability / Likelihood Rating", angle: -90, position: "insideLeft", offset: -5, className: "font-mono text-[10px] font-black uppercase text-slate-400 tracking-wider" }}
+                    className="font-mono text-[10px] font-bold text-slate-500"
+                  />
+                  
+                  <ZAxis type="number" range={[140, 160]} />
                   
                   <Tooltip 
                     cursor={{ strokeDasharray: '3 3' }}
@@ -224,8 +252,9 @@ export default function RiskClusterDashboard() {
                         return (
                           <div className="bg-white border border-slate-200 p-2 text-xs font-mono rounded shadow-lg text-slate-800">
                             <p className="font-bold text-[#142E88]">{data.title}</p>
-                            <p>ROAM: {data.roamCategory || "New / Unassigned"}</p>
-                            <p>Importance: {data.importance || "Not Configured"}</p>
+                            <p>State Status: {data.roamCategory || "New / Unassigned"}</p>
+                            <p>Importance: {data.importance || "Not set"}</p>
+                            <p>Probability: {data.probability !== undefined ? data.probability : "Not set"}</p>
                           </div>
                         );
                       }
@@ -257,7 +286,7 @@ export default function RiskClusterDashboard() {
             </CardContent>
           </Card>
 
-          {/* DETAIL SUB-SECTION VIEW PANEL */}
+          {/* DETAIL TRIAGE WORKSPACE SECTION VIEW PANEL */}
           {selectedItem && (
             <Card className="rounded-none border-slate-200 bg-white shadow-xs">
               <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
@@ -268,11 +297,8 @@ export default function RiskClusterDashboard() {
               </CardHeader>
               <CardContent className="p-6 space-y-6 text-xs font-mono">
                 
-                {/* INTERACTIVE SELECTOR ROWS */}
-                {/* 🎨 FULL DYNAMIC WORKBENCH TRIAGE REGISTRY HUB */}
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-4 border-b border-slate-200 bg-slate-50/50 p-4 border rounded-sm">
                   
-                  {/* 1. RAIDQ TYPE DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">RAIDQ Type</span>
                     <select
@@ -286,7 +312,6 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  {/* 2. PROBABILITY DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Probability</span>
                     <select
@@ -300,7 +325,6 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  {/* 3. IMPORTANCE DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Importance</span>
                     <select
@@ -314,7 +338,6 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  {/* 4. DETECTABILITY DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Detectability</span>
                     <select
@@ -328,7 +351,6 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  {/* 5. ROAM CATEGORY DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">ROAM Category</span>
                     <select
@@ -342,7 +364,6 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  {/* 6. STATUS VARIANT DROPDOWN SELECTOR */}
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Status Variant</span>
                     <select
@@ -358,7 +379,6 @@ export default function RiskClusterDashboard() {
 
                 </div>
 
-                {/* RAW DESCRIPTION AND CONTENT DETAILS */}
                 <div className="space-y-1 text-[11px] border-b border-slate-100 pb-4">
                   <span className="text-slate-400 block text-[9px] uppercase font-bold">Field Inspector Observation Context</span>
                   <p className="text-slate-700 leading-relaxed bg-slate-50/50 p-3 border border-slate-100 font-sans">{selectedItem.description}</p>
@@ -435,7 +455,7 @@ export default function RiskClusterDashboard() {
                   />
                 </div>
                 <div className="flex justify-between items-center text-[10px] text-slate-400">
-                  <span>ROAM: <strong className="text-slate-600 font-bold">{item.roamCategory || "Unassigned"}</strong></span>
+                  <span>State: <strong className="text-slate-600 font-bold">{item.roamCategory || "Unassigned"}</strong></span>
                   <span>Impact: <strong className="text-slate-600 font-bold">{item.importance || "N/A"}</strong></span>
                 </div>
               </div>
