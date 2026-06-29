@@ -5,8 +5,7 @@ import { useState, useEffect } from "react";
 import { getPermissions } from "@/lib/security"; //
 import { initiateGoogleSignIn } from "@/firebase/non-blocking-login"; // Make sure the relative path points to your non-blocking file
 import Link from "next/link"; //
-import { Plane, LayoutDashboard, FileText, Network, HardHat, FileSpreadsheet, ShieldCheck, LogOut, PieChart, Library, Eye, EyeOff, Bell, MessageSquare, AlertCircle } from "lucide-react"; //
-import { Button } from "@/components/ui/button"; //
+import { Plane, LayoutDashboard, FileText, Network, HardHat, FileSpreadsheet, ShieldCheck, LogOut, PieChart, Library, Eye, EyeOff, Bell, MessageSquare, AlertCircle, Layers, Globe } from "lucide-react";import { Button } from "@/components/ui/button"; //
 import { auth, db } from "@/lib/firebase"; //
 
 // Native Firebase Operations
@@ -313,9 +312,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           )}
 
+          {/* --- EXISTING PROJECT WORKBENCH --- */}
           {showProjectWorkbench && (
             <Link href="/dashboard/workbench" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
               <HardHat className="h-4 w-4 text-[#1EA7F4]" /> Project Workbench
+            </Link>
+          )}
+
+          {/* 🆕 ACCURATE WORKBENCH CLUSTER PATH */}
+          {showProjectWorkbench && (
+            <Link href="/dashboard/workbench/cluster" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
+              <svg className="h-4 w-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg> 
+              Workbench Risk Cluster
+            </Link>
+          )}
+
+          {/* 🆕 ACCURATE PORTFOLIO CLUSTER PATH */}
+          {showPortfolioDashboard && (
+            <Link href="/dashboard/portfolio/cluster" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
+              <svg className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9h18" />
+              </svg>
+              Portfolio Risk Cluster
             </Link>
           )}
 

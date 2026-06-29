@@ -17,6 +17,11 @@ import { kmeans } from "ml-kmeans";
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
 const IMPACT_WEIGHTS: Record<string, number> = { Critical: 1.0, Mandatory: 0.85, High: 0.65, Medium: 0.45, Low: 0.25, "N/A": 0.0 };
 
+// Ensure these arrays are declared at the top of your cluster pages
+const RAIDQ_TYPES = ["Risk", "Action", "Assumption", "Issue", "Decision", "Dependency", "Question"];
+const ROAM_CATEGORIES = ["New / Unassigned", "Owned", "Mitigated", "Accepted", "Resolved"];
+const IMPORTANCE_LEVELS = ["Critical", "Mandatory", "High", "Medium", "Low", "N/A"];
+
 // Lifecycle Management Explicit Status Color System
 const STATUS_COLORS: Record<string, string> = {
   Resolved: "#10B981",   // Green 🟢

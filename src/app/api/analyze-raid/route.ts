@@ -35,7 +35,11 @@ export async function POST() {
 
     // Initialize services safely now that authentication is guaranteed
     const adminDb = getFirestore();
-    const ai = new GoogleGenAI();
+    
+    // 🟢 FIXED: Explicitly pass configuration context to prevent empty environment auto-detection crashes
+    const ai = new GoogleGenAI({ 
+      apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY 
+    });
 
     // 🟢 1. Fetch your dynamic instruction override text from Firestore
     const configSnap = await adminDb.collection("admin_settings").doc("risk_profile").get();
