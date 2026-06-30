@@ -324,6 +324,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           )}
 
+          {/* 🪲 TEMPORARY DEBUG READOUT */}
+        <div className="text-[10px] text-amber-400 p-2 bg-slate-900 rounded mb-2">
+          Flag: {showProjectWorkbench ? "ON" : "OFF"} | Role: "{userRole || "NOT FOUND"}"
+        </div>
+
           {/* 🔐 ROLE SECURED: Only visible if the project workbench feature flag is on AND user has matching management clearance */}
           {showProjectWorkbench && userRole && ["PORTFOLIO_MANAGER", "PROGRAM_MANAGER", "PROJECT_MANAGER"].includes(userRole) && (
             <Link href="/dashboard/workbench/cluster" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
