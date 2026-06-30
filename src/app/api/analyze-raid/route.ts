@@ -36,18 +36,18 @@ export async function POST() {
     // Initialize services safely now that authentication is guaranteed
     const adminDb = getFirestore();
     
-    // 🟢 FIXED: Explicitly pass configuration context to prevent empty environment auto-detection crashes
+    // Explicitly pass configuration context to prevent empty environment auto-detection crashes
     const ai = new GoogleGenAI({ 
       apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY 
     });
 
-    // 🟢 1. Fetch your dynamic instruction override text from Firestore
+    // 1. Fetch your dynamic instruction override text from Firestore
     const configSnap = await adminDb.collection("admin_settings").doc("risk_profile").get();
     const systemInstructionOverride = configSnap.exists 
       ? configSnap.data()?.riskPrompt 
       : "You are an expert airport systems construction risk analyzer.";
 
-    // 🟢 2. Pull the material (e.g., Sub-Observations with type "Risk")
+    // 2. Pull the material (e.g., Sub-Observations with type "Risk")
     const snapshot = await adminDb.collectionGroup("sub_observations")
       .where("observationType", "==", "Risk")
       .limit(10) // Chunk batch processing
@@ -63,7 +63,7 @@ export async function POST() {
       return `[ID: ${d.id}] Description: ${data.description}`;
     }).join("\n");
 
-    // 🟢 3. Invoke Gemini using the saved prompt text as the core instruction directive
+    // 3. Invoke Gemini using the saved prompt text as the core instruction directive
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: `Analyze these field notes and extract structured RAID items:\n\n${textToAnalyze}`,
@@ -95,8 +95,9 @@ export async function POST() {
     const jsonText = response.text || "{\"items\":[]}";
     const { items } = JSON.parse(jsonText);
 
-    // 🟢 4. Write back structured entries directly to your unified RAID matrix database
+    // 4. Write back structured entries directly to your unified RAID matrix database
     const batch = adminDb.batch();
+    
     for (const item of items) {
       const raidRef = adminDb.collection("raid_matrix").doc();
       
@@ -122,9 +123,15 @@ export async function POST() {
         analyzedAt: new Date().toISOString(),
       });
     }
+    
     await batch.commit();
 
-    return NextResponse.json({ success: true, processedCount: items.length });
+    // 🟢 Clean top-level function return
+    return NextResponse.json({ 
+      success: true, 
+      processedCount: items ? items.length : 0 
+    });
+
   } catch (error: any) {
     console.error("RAID Pipeline Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
