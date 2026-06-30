@@ -17,6 +17,9 @@ export function GlobalHeaderNotificationHub() {
   const [isOpen, setIsOpen] = useState(false);
   const currentUserEmail = auth.currentUser?.email || "";
   const username = currentUserEmail.split("@")[0].toLowerCase();
+  
+  // Clean single declaration for the hub
+  const userRole = getPermissions(currentUserEmail)?.role;
 
   useEffect(() => {
     if (!currentUserEmail) return;
@@ -127,6 +130,8 @@ export function GlobalHeaderNotificationHub() {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null); //
   const [isInitializing, setIsInitializing] = useState(true); //
+  const currentUserEmail = auth.currentUser?.email || "";
+  const userRole = getPermissions(currentUserEmail)?.role;
   
   const [email, setEmail] = useState(""); //
   const [password, setPassword] = useState(""); //
@@ -319,8 +324,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           )}
 
-          {/* 🔐 ROLE SECURED: Only visible to Portfolio, Program, and Project Managers */}
-          {user && ["PORTFOLIO_MANAGER", "PROGRAM_MANAGER", "PROJECT_MANAGER"].includes(user.role) && (
+          {/* 🔐 ROLE SECURED: Only visible if the project workbench feature flag is on AND user has matching management clearance */}
+          {showProjectWorkbench && userRole && ["PORTFOLIO_MANAGER", "PROGRAM_MANAGER", "PROJECT_MANAGER"].includes(userRole) && (
             <Link href="/dashboard/workbench/cluster" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
               <svg className="h-4 w-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
