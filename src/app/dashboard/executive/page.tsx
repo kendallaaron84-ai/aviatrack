@@ -21,6 +21,23 @@ const STATUS_COLORS: Record<string, string> = {
   "Resolved": "#10B981"          // Green 🟢
 };
 
+const formatTimestamp = (ts: any): string => {
+  if (!ts) return "";
+  if (typeof ts.toDate === 'function') return ts.toDate().toLocaleDateString();
+  if (ts.seconds) return new Date(ts.seconds * 1000).toLocaleDateString();
+  try {
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? "" : d.toLocaleDateString();
+  } catch { return ""; }
+};
+
+const getEvmColorClass = (val: any) => {
+  if (val === null || val === undefined || val === "" || val === "N/A") return 'text-slate-500';
+  const parsed = parseFloat(val);
+  if (isNaN(parsed)) return 'text-slate-500';
+  return parsed < 1 ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold';
+};
+
 export default function AviationExecutiveControlRoom() {
   const { toast } = useToast();
   const [activeProgram, setActiveProgram] = useState<"ALL" | "TDP" | "CIP">("ALL");
@@ -65,7 +82,8 @@ export default function AviationExecutiveControlRoom() {
     const unsubGlobalReports = onSnapshot(qGlobalReports, (snapshot) => {
       setGlobalReports(snapshot.docs.map(d => {
         const pathSegments = d.ref.path.split('/');
-        const projectId = pathSegments.length >= 4 ? pathSegments[1] : "Unknown";
+        const biweeklyIndex = pathSegments.indexOf('biweekly_reports');
+        const projectId = biweeklyIndex > 0 ? pathSegments[biweeklyIndex - 1] : "Unknown";
         return { id: d.id, projectId, ...d.data() };
       }));
     });
@@ -473,7 +491,7 @@ export default function AviationExecutiveControlRoom() {
                     <TableCell className="text-right"><span className={`text-sm font-bold font-mono ${project.scheduleVariance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>${(project.scheduleVariance || 0).toLocaleString()}</span></TableCell>
                     <TableCell className="text-center"><span className={`text-xs font-bold px-2 py-1 rounded-sm ${project.totalSlippageDays > 14 ? 'bg-red-100 text-red-700' : project.totalSlippageDays > 0 ? 'bg-amber-100 text-amber-700' : 'text-slate-500'}`}>{project.totalSlippageDays > 0 ? `+${project.totalSlippageDays} Days` : '--'}</span></TableCell>
                     <TableCell className="text-center"><span className={`text-xs font-bold px-2 py-1 rounded-sm ${project.criticalBlockersCount > 0 ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'text-slate-300'}`}>{project.criticalBlockersCount > 0 ? project.criticalBlockersCount : '0'}</span></TableCell>
-                    <TableCell className="text-right pr-6"><div className="text-xs font-medium text-slate-700">{project.lastSignOffBy?.split("@")[0]}</div><div className="flex items-center justify-end gap-1 text-[9px] text-slate-400 font-mono mt-0.5"><Clock className="h-2.5 w-2.5" />{project.lastSignOffAt ? new Date(project.lastSignOffAt).toLocaleDateString() : ""}</div></TableCell>
+                    <TableCell className="text-right pr-6"><div className="text-xs font-medium text-slate-700">{project.lastSignOffBy?.split("@")[0]}</div><div className="flex items-center justify-end gap-1 text-[9px] text-slate-400 font-mono mt-0.5"><Clock className="h-2.5 w-2.5" />{formatTimestamp(project.lastSignOffAt)}</div></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -817,7 +835,7 @@ export default function AviationExecutiveControlRoom() {
         </CardHeader>
         <CardContent className="p-0 flex flex-col">
           <div className="overflow-x-auto">
-            {globalReports.length === 0 ? (
+            {filteredGlobalReports.length === 0 ? (
               <div className="p-8 text-center text-slate-400 text-sm italic">No status reports have been generated across the portfolio yet.</div>
             ) : (
               <Table>
@@ -834,14 +852,14 @@ export default function AviationExecutiveControlRoom() {
                 <TableBody>
                   {paginatedReports.map(report => (
                     <TableRow key={report.id} className="hover:bg-slate-50/50 transition-colors">
-                      <TableCell className="text-xs font-mono font-medium text-slate-700">{report.timestamp ? new Date(report.timestamp).toLocaleDateString() : ""}</TableCell>
+                      <TableCell className="text-xs font-mono font-medium text-slate-700">{formatTimestamp(report.timestamp)}</TableCell>
                       <TableCell className="text-xs font-bold text-[#142E88] font-mono">{report.projectId}</TableCell>
                       <TableCell className="text-xs font-semibold text-slate-700">{report.reportingPeriod}</TableCell>
                       <TableCell className="text-xs text-slate-500">{report.loggedBy?.split("@")[0]}</TableCell>
                       <TableCell className="text-xs font-mono font-bold">
-                        <span className={parseFloat(report.evmMetrics?.spi) < 1 ? 'text-red-600' : 'text-emerald-600'}>SPI: {report.evmMetrics?.spi || 'N/A'}</span>
+                        <span className={getEvmColorClass(report.evmMetrics?.spi)}>SPI: {report.evmMetrics?.spi || 'N/A'}</span>
                         <span className="text-slate-300 mx-2">|</span>
-                        <span className={parseFloat(report.evmMetrics?.cpi) < 1 ? 'text-red-600' : 'text-emerald-600'}>CPI: {report.evmMetrics?.cpi || 'N/A'}</span>
+                        <span className={getEvmColorClass(report.evmMetrics?.cpi)}>CPI: {report.evmMetrics?.cpi || 'N/A'}</span>
                       </TableCell>
                       <TableCell className="text-right">
                         <Button 
@@ -860,9 +878,9 @@ export default function AviationExecutiveControlRoom() {
             )}
           </div>
           {/* Pagination Controls */}
-          {globalReports.length > 0 && (
+          {filteredGlobalReports.length > 0 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50/50 rounded-b-sm">
-              <span className="text-xs font-medium text-slate-500">Showing page {currentPage} of {totalPages} ({globalReports.length} total reports)</span>
+              <span className="text-xs font-medium text-slate-500">Showing page {currentPage} of {totalPages} ({filteredGlobalReports.length} total reports)</span>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={handlePrevPage} disabled={currentPage === 1} className="h-8 text-xs font-bold cursor-pointer bg-white"><ChevronLeft className="h-3 w-3 mr-1" /> Prev</Button>
                 <Button variant="outline" size="sm" onClick={handleNextPage} disabled={currentPage === totalPages} className="h-8 text-xs font-bold cursor-pointer bg-white">Next <ChevronRight className="h-3 w-3 ml-1" /></Button>
@@ -1039,13 +1057,13 @@ export default function AviationExecutiveControlRoom() {
               <div className="grid grid-cols-4 gap-4 pb-4 border-b border-slate-200 bg-white p-4 rounded-sm shadow-xs">
                 <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Reporting Period</span><span className="text-sm font-semibold text-[#142E88]">{viewingSnapshot.reportingPeriod}</span></div>
                 <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Submitted By</span><span className="text-sm font-semibold text-slate-800">{viewingSnapshot.loggedBy?.split('@')[0]}</span></div>
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Date Logged</span><span className="text-sm font-mono font-bold text-slate-800">{new Date(viewingSnapshot.timestamp).toLocaleDateString()}</span></div>
+                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Date Logged</span><span className="text-sm font-mono font-bold text-slate-800">{formatTimestamp(viewingSnapshot.timestamp)}</span></div>
                 <div>
                   <span className="block text-[10px] font-bold text-slate-500 uppercase">EVM Performance</span>
                   <div className="text-sm font-mono font-bold">
-                    <span className={parseFloat(viewingSnapshot.evmMetrics?.spi) < 1 ? 'text-red-600' : 'text-emerald-600'}>SPI: {viewingSnapshot.evmMetrics?.spi || 'N/A'}</span>
+                    <span className={getEvmColorClass(viewingSnapshot.evmMetrics?.spi)}>SPI: {viewingSnapshot.evmMetrics?.spi || 'N/A'}</span>
                     <span className="mx-2 text-slate-300">|</span>
-                    <span className={parseFloat(viewingSnapshot.evmMetrics?.cpi) < 1 ? 'text-red-600' : 'text-emerald-600'}>CPI: {viewingSnapshot.evmMetrics?.cpi || 'N/A'}</span>
+                    <span className={getEvmColorClass(viewingSnapshot.evmMetrics?.cpi)}>CPI: {viewingSnapshot.evmMetrics?.cpi || 'N/A'}</span>
                   </div>
                 </div>
               </div>

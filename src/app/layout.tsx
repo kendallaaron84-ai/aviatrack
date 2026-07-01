@@ -4,8 +4,8 @@ import { FirebaseClientProvider } from "@/firebase/client-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'AviaTrack',
-  description: 'Construction project tracking for airports.',
+  title: 'System Portal',
+  description: 'Standard corporate entry application.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

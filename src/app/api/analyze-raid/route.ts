@@ -13,9 +13,14 @@ export async function POST() {
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
     
     // 🔐 Clean private key of any hidden enclosing string formatting from environments
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY 
-      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 
-      : undefined;
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    if (privateKey) {
+      privateKey = privateKey.trim();
+      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        privateKey = privateKey.slice(1, -1);
+      }
+      privateKey = privateKey.replace(/\\n/g, '\n');
+    }
 
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
@@ -68,14 +73,42 @@ export async function POST() {
       }
     });
 
+    // Aggregate unique parent observation document IDs to avoid N+1 queries
+    const parentObservationIds = new Set<string>();
+    fieldSnapshot.forEach((doc) => {
+      const pathSegments = doc.ref.path.split("/");
+      const parentObservationId = pathSegments[1];
+      if (parentObservationId) {
+        parentObservationIds.add(parentObservationId);
+      }
+    });
+
+    const parentIdList = Array.from(parentObservationIds);
+    const parentSnaps = await Promise.all(
+      parentIdList.map(async (parentObsId) => {
+        const snap = await adminDb.collection("field_observations").doc(parentObsId).get();
+        return { id: parentObsId, exists: snap.exists, data: snap.data() };
+      })
+    );
+
+    const parentProjectMap: Record<string, string> = {};
+    parentSnaps.forEach((p) => {
+      if (p.exists && p.data?.projectId) {
+        parentProjectMap[p.id] = p.data.projectId;
+      } else {
+        parentProjectMap[p.id] = "Global";
+      }
+    });
+
     // Source B: Extract from nested field observation sub-collections (/field_observations/{obsId}/sub_observations/{subId})
     fieldSnapshot.forEach((doc) => {
       const data = doc.data();
       const pathSegments = doc.ref.path.split("/");
       const parentObservationId = pathSegments[1] || "Global";
+      const inferredProjectId = parentProjectMap[parentObservationId] || "Global";
 
       if (data.description) {
-        itemsToProcess.push(`[ID: ${doc.id}][ParentObs: ${parentObservationId}][Source: Field Observation] Description: ${data.description}`);
+        itemsToProcess.push(`[ID: ${doc.id}][Project: ${inferredProjectId}][ParentObs: ${parentObservationId}][Source: Field Observation] Description: ${data.description}`);
       }
     });
 
