@@ -31,7 +31,7 @@ export default function PMDashboardPage() {
     // Live Observations Tracker with Deep Comment Hydration
     const unsubObs = onSnapshot(collection(db, "field_observations"), async (snapshot) => {
       const baseObs = snapshot.docs.map(d => {
-        const data = d.data();
+        const data = d.data() as any;
         const id = d.id;
         
         const submittedDate = data.submittedAt ? new Date(data.submittedAt) : new Date();
@@ -79,7 +79,7 @@ export default function PMDashboardPage() {
       );
 
       // Sorting Logic: Action items first, then chronological newest first
-      fullyHydratedObs.sort((a, b) => {
+      fullyHydratedObs.sort((a: any, b: any) => {
         const aIsPending = a.status === "New" || a.status === "Needs Verification";
         const bIsPending = b.status === "New" || b.status === "Needs Verification";
         if (aIsPending && !bIsPending) return -1;
@@ -241,8 +241,8 @@ export default function PMDashboardPage() {
                         <span className={obs.priority === 'Critical' ? 'text-red-600 font-bold' : 'text-slate-700'}>
                           {obs.priority}
                         </span>
-                        {obs.requiresActionAlert && <ShieldAlert className="h-3.5 w-3.5 text-red-500 animate-pulse shrink-0" title={`Overdue verification: ${obs.ageInDays} days unreviewed.`} />}
-                        {!obs.requiresActionAlert && obs.requiresFollowUpWarning && <Clock className="h-3.5 w-3.5 text-amber-500 shrink-0" title={`Awaiting PM check: ${obs.ageInDays} days unreviewed.`} />}
+                        {obs.requiresActionAlert && <span title={`Overdue verification: ${obs.ageInDays} days unreviewed.`}><ShieldAlert className="h-3.5 w-3.5 text-red-500 animate-pulse shrink-0" /></span>}
+                        {!obs.requiresActionAlert && obs.requiresFollowUpWarning && <span title={`Awaiting PM check: ${obs.ageInDays} days unreviewed.`}><Clock className="h-3.5 w-3.5 text-amber-500 shrink-0" /></span>}
                       </div>
                     </TableCell>
                     

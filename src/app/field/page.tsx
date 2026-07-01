@@ -24,6 +24,11 @@ export default function FieldIntakePage() {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmittedSuccessfully, setIsSubmittedSuccessfully] = useState(false);
+  
+  // Resumable upload tracking states
+  const [uploadProgressList, setUploadProgressList] = useState<any[]>([]);
+  // Local storage draft restore tracking state
+  const [savedDraftExists, setSavedDraftExists] = useState(false);
 
   // Dynamic PM Workspace Data Streams
   const [projects, setProjects] = useState<any[]>([]);
@@ -80,36 +85,88 @@ export default function FieldIntakePage() {
     });
 
     const unsubPers = onSnapshot(collection(db, "admin_projects", project, "personnel"), (snap) => {
-      const activePersonnel = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => p.active !== false);
+      const activePersonnel = snap.docs.map(d => ({ id: d.id, ...d.data() } as any)).filter(p => p.active !== false);
       setPersonnel(activePersonnel);
     });
 
     return () => { unsubLocs(); unsubPers(); };
   }, [project]);
 
-  // 📋 SAFEGUARD: Local Storage Autosave Draft Layer
+  // 📋 OFFLINE RESILIENCE: Check for existing draft on component mount
   useEffect(() => {
-    const savedDraft = localStorage.getItem("field_observation_draft");
+    const savedDraft = localStorage.getItem("field_observation_full_draft");
     if (savedDraft) {
-      try {
-        const parsed = JSON.parse(savedDraft);
-        if (Array.isArray(parsed)) setObservationsList(parsed);
-      } catch (e) {
-        console.error("Failed to re-hydrate field draft state", e);
-      }
+      setSavedDraftExists(true);
     }
   }, []);
 
-  useEffect(() => {
-    if (observationsList.length > 0) {
-      // Stripping out raw File instances to avoid local storage serialization crashes
-      const cleanDraft = observationsList.map(obs => ({
-        ...obs,
-        attachedFiles: [] 
-      }));
-      localStorage.setItem("field_observation_draft", JSON.stringify(cleanDraft));
+  const handleRestoreDraft = () => {
+    const saved = localStorage.getItem("field_observation_full_draft");
+    if (saved) {
+      try {
+        const draft = JSON.parse(saved);
+        if (draft.program) setProgram(draft.program);
+        if (draft.project) setProject(draft.project);
+        if (draft.stage) setStage(draft.stage);
+        if (draft.location) setLocation(draft.location);
+        if (draft.isExterior !== undefined) setIsExterior(draft.isExterior);
+        if (draft.weather) setWeather(draft.weather);
+        if (draft.buildingLevel) setBuildingLevel(draft.buildingLevel);
+        if (draft.sector) setSector(draft.sector);
+        if (draft.selectedPersonnel) setSelectedPersonnel(draft.selectedPersonnel);
+        if (draft.observationsList) setObservationsList(draft.observationsList);
+        
+        toast({ title: "Draft Restored", description: "Your previously saved field log has been restored." });
+      } catch (err) {
+        console.error("Failed to restore draft:", err);
+        toast({ variant: "destructive", title: "Restore Failed", description: "The draft was corrupted or incomplete." });
+      }
     }
-  }, [observationsList]);
+    setSavedDraftExists(false);
+  };
+
+  const handleDiscardDraft = () => {
+    localStorage.removeItem("field_observation_full_draft");
+    setSavedDraftExists(false);
+    toast({ title: "Draft Discarded", description: "Your local field log draft has been cleared." });
+  };
+
+  // 🕒 ENHANCEMENT 1: 30-Second Background Autosave Interval
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Don't autosave if already submitted successfully
+      if (isSubmittedSuccessfully) return;
+
+      const draftPayload = {
+        program,
+        project,
+        stage,
+        location,
+        isExterior,
+        weather,
+        buildingLevel,
+        sector,
+        selectedPersonnel,
+        observationsList: observationsList.map(obs => ({
+          id: obs.id,
+          type: obs.type,
+          priority: obs.priority,
+          description: obs.description,
+          previewUrls: obs.previewUrls || [],
+          attachedFiles: [] // strip non-serializable File instances
+        }))
+      };
+
+      try {
+        localStorage.setItem("field_observation_full_draft", JSON.stringify(draftPayload));
+        console.log("Offline Resilience: Form state autosaved to local draft.");
+      } catch (err) {
+        console.error("Offline Resilience: Autosave write failure:", err);
+      }
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
+  }, [program, project, stage, location, isExterior, weather, buildingLevel, sector, selectedPersonnel, observationsList, isSubmittedSuccessfully]);
 
   const handlePersonnelToggle = (name: string) => {
     setSelectedPersonnel(prev => 
@@ -148,6 +205,7 @@ export default function FieldIntakePage() {
     e.preventDefault();
     if (isSubmitting) return; 
     setIsSubmitting(true);
+    setUploadProgressList([]); // reset progress tracker
 
     try {
       const authInstance = getAuth();
@@ -167,6 +225,24 @@ export default function FieldIntakePage() {
       const activeProjectObj = projects.find(p => p.id === project);
       const projectDisplayName = activeProjectObj ? activeProjectObj.name : project;
 
+      // [ENHANCEMENT 4] Normalization search tags for the parent observation
+      const parentTextPool = [
+        emailUser,
+        program,
+        project,
+        projectDisplayName || "",
+        stage,
+        location,
+        isExterior ? "exterior" : "interior",
+        isExterior ? weather : "controlled",
+        buildingLevel,
+        sector || "00",
+        selectedPersonnel.join(" "),
+        "Needs Verification"
+      ].join(" ").toLowerCase();
+      
+      const parent_search_tags = Array.from(new Set(parentTextPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
+
       const fieldReportPayload = {
         submittedBy: emailUser,
         submittedAt: submissionTimestamp,
@@ -180,37 +256,104 @@ export default function FieldIntakePage() {
         buildingLevel,
         sector: sector || "00",
         presentAtSite: selectedPersonnel.join(", "), 
-        status: "Needs Verification"
+        status: "Needs Verification",
+        search_tags: parent_search_tags
       };
 
       const docRef = await addDoc(collection(db, "field_observations"), fieldReportPayload);
 
-      for (const obs of observationsList) {
-        const cloudImageUrls: string[] = [];
+      // Pre-calculate progress tracking items for files
+      const progressItems: any[] = [];
+      const uploadsToRun: { id: string; file: File; obsId: string; storageRefInstance: any }[] = [];
 
-        // Chunked Resumable Upload pipeline for multiple photos
+      for (const obs of observationsList) {
         if (obs.attachedFiles && obs.attachedFiles.length > 0) {
           for (const file of obs.attachedFiles) {
+            const uId = crypto.randomUUID();
             const fileExtension = file.name.split('.').pop() || 'jpg';
-            const storagePath = `field_evidence/${docRef.id}-${obs.id}-${crypto.randomUUID()}.${fileExtension}`;
+            const storagePath = `field_evidence/${docRef.id}-${obs.id}-${uId}.${fileExtension}`;
             const storageRefInstance = storageRef(storageInstance, storagePath);
             
-            const uploadTask = uploadBytesResumable(storageRefInstance, file);
-
-            const downloadUrl = await new Promise<string>((resolve, reject) => {
-              uploadTask.on(
-                "state_changed",
-                null,
-                (error) => reject(error),
-                async () => {
-                  const url = await getDownloadURL(uploadTask.snapshot.ref);
-                  resolve(url);
-                }
-              );
+            progressItems.push({
+              id: uId,
+              fileName: file.name,
+              bytesTransferred: 0,
+              totalBytes: file.size,
+              percentage: 0,
+              status: 'running',
+              task: null
             });
-            cloudImageUrls.push(downloadUrl);
+
+            uploadsToRun.push({
+              id: uId,
+              file,
+              obsId: obs.id,
+              storageRefInstance
+            });
           }
         }
+      }
+
+      setUploadProgressList(progressItems);
+
+      const cloudUrlsByObs: Record<string, string[]> = {};
+
+      // Run uploads sequentially with progress hook
+      for (const item of uploadsToRun) {
+        const uploadTask = uploadBytesResumable(item.storageRefInstance, item.file);
+
+        // Bind active upload task to tracking list
+        setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, task: uploadTask } : p));
+
+        const downloadUrl = await new Promise<string>((resolve, reject) => {
+          uploadTask.on(
+            "state_changed",
+            (snapshot) => {
+              const bytesTransferred = snapshot.bytesTransferred;
+              const totalBytes = snapshot.totalBytes;
+              const percentage = totalBytes > 0 ? Math.round((bytesTransferred / totalBytes) * 100) : 0;
+              
+              let status: 'running' | 'paused' | 'success' | 'error' = 'running';
+              if (snapshot.state === 'paused') {
+                status = 'paused';
+              }
+
+              setUploadProgressList(prev => prev.map(p => p.id === item.id ? {
+                ...p,
+                bytesTransferred,
+                totalBytes,
+                percentage,
+                status
+              } : p));
+            },
+            (error) => {
+              setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'error' } : p));
+              reject(error);
+            },
+            async () => {
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'success', percentage: 100 } : p));
+              resolve(url);
+            }
+          );
+        });
+
+        if (!cloudUrlsByObs[item.obsId]) {
+          cloudUrlsByObs[item.obsId] = [];
+        }
+        cloudUrlsByObs[item.obsId].push(downloadUrl);
+      }
+
+      for (const obs of observationsList) {
+        const cloudImageUrls = cloudUrlsByObs[obs.id] || [];
+
+        // [ENHANCEMENT 4] Normalization search tags for the sub-observation
+        const subTextPool = [
+          obs.type || "",
+          obs.priority || "",
+          obs.description || ""
+        ].join(" ").toLowerCase();
+        const sub_search_tags = Array.from(new Set(subTextPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
 
         await addDoc(collection(db, "field_observations", docRef.id, "sub_observations"), {
           observationId: obs.id,
@@ -218,11 +361,12 @@ export default function FieldIntakePage() {
           priority: obs.priority,
           description: obs.description,
           createdAt: submissionTimestamp,
-          itemPhotos: cloudImageUrls
+          itemPhotos: cloudImageUrls,
+          search_tags: sub_search_tags
         });
       }
 
-      localStorage.removeItem("field_observation_draft"); 
+      localStorage.removeItem("field_observation_full_draft"); 
       setIsSubmittedSuccessfully(true);
       toast({ title: "Report Saved", description: "All observations pushed to the PM verification queue." });
 
@@ -286,6 +430,40 @@ export default function FieldIntakePage() {
           </Link>
         </Button>
       </div>
+
+      {/* 🔮 OFFLINE RESILIENCE: DRAFT RESTORE TOP BANNER */}
+      {savedDraftExists && (
+        <Card className="border border-blue-200 bg-blue-50/50 p-4 rounded-sm shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-sans">
+          <div className="flex items-start gap-3">
+            <CloudSun className="h-5 w-5 text-[#142E88] mt-0.5 shrink-0" />
+            <div>
+              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">Unsaved Field Draft Detected</h4>
+              <p className="text-[11px] text-slate-600 leading-normal">
+                We found a local draft saved during your last active walk. Would you like to restore or discard these observations?
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button 
+              type="button"
+              size="sm"
+              onClick={handleRestoreDraft}
+              className="bg-[#142E88] hover:bg-blue-800 text-white font-bold text-[10px] h-8 rounded-xs px-3 shadow-xs cursor-pointer uppercase tracking-wider"
+            >
+              Restore Draft
+            </Button>
+            <Button 
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleDiscardDraft}
+              className="border-slate-200 text-slate-500 hover:bg-slate-100 bg-white font-bold text-[10px] h-8 rounded-xs px-3 cursor-pointer uppercase tracking-wider"
+            >
+              Discard
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* INTERACTIVE INPUT FORM LAYER */}
       <form onSubmit={handleFormSubmission} className="space-y-6 print:hidden">
@@ -572,6 +750,84 @@ export default function FieldIntakePage() {
           ))}
         </div>
       </div>
+
+      {/* 🔮 RESUMABLE MULTI-PHOTO UPLOAD PROGRESS DRAWER */}
+      {uploadProgressList.length > 0 && (
+        <div className="fixed bottom-6 right-6 w-96 bg-slate-900/95 backdrop-blur-md border border-slate-700/60 rounded-lg shadow-2xl p-4 text-white z-50 space-y-3 font-sans print:hidden animate-in slide-in-from-bottom duration-300">
+          <div className="flex items-center justify-between border-b border-slate-700/50 pb-2">
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent" />
+              <h3 className="text-xs font-bold uppercase tracking-wider">Uploading Evidence Pack</h3>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono">
+              {uploadProgressList.filter(p => p.status === 'success').length} / {uploadProgressList.length} Complete
+            </span>
+          </div>
+          
+          <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+            {uploadProgressList.map((item) => (
+              <div key={item.id} className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] truncate max-w-[180px]" title={item.fileName}>
+                    {item.fileName}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-[10px] text-slate-400">
+                      {item.percentage}%
+                    </span>
+                    {item.status === 'running' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (item.task) {
+                            item.task.pause();
+                            setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'paused' } : p));
+                          }
+                        }}
+                        className="text-[9px] bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded border border-slate-700 cursor-pointer text-white"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    {item.status === 'paused' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (item.task) {
+                            item.task.resume();
+                            setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'running' } : p));
+                          }
+                        }}
+                        className="text-[9px] bg-blue-600 hover:bg-blue-500 px-1.5 py-0.5 rounded cursor-pointer text-white"
+                      >
+                        Resume
+                      </button>
+                    )}
+                    {item.status === 'success' && (
+                      <span className="text-[9px] text-emerald-400 font-bold uppercase">Success</span>
+                    )}
+                    {item.status === 'error' && (
+                      <span className="text-[9px] text-rose-400 font-bold uppercase">Error</span>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div 
+                    className={`h-full transition-all duration-300 ${
+                      item.status === 'success' ? 'bg-emerald-500' :
+                      item.status === 'error' ? 'bg-rose-500' :
+                      item.status === 'paused' ? 'bg-amber-500' :
+                      'bg-blue-500 animate-pulse'
+                    }`}
+                    style={{ width: `${item.percentage}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

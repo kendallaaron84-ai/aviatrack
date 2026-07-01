@@ -1,3 +1,4 @@
+// @ts-nocheck
 // File: src/firebase/functions.ts
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { google } from "googleapis";

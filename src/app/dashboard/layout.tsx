@@ -9,7 +9,7 @@ import { Plane, LayoutDashboard, FileText, Network, HardHat, FileSpreadsheet, Sh
 import { auth, db } from "@/lib/firebase"; //
 
 // Native Firebase Operations
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from "firebase/auth"; //
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User, signInWithPopup, GoogleAuthProvider } from "firebase/auth"; //
 import { collectionGroup, query, where, onSnapshot, doc, setDoc } from "firebase/firestore";
 
 export function GlobalHeaderNotificationHub() {
@@ -145,6 +145,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     });
     return () => unsubscribe();
   }, []); //
+
+  // 🕒 ENHANCEMENT 3: Proactive Keep-Alive Auth Token Refresher
+  useEffect(() => {
+    if (!user) return;
+
+    // Trigger token refresh every 45 minutes (45 * 60 * 1000 ms)
+    const intervalMs = 45 * 60 * 1000;
+    const interval = setInterval(async () => {
+      try {
+        console.log("Keep-alive: Proactively refreshing Firebase Auth ID Token...");
+        await user.getIdToken(true);
+        console.log("Keep-alive: Auth Token successfully refreshed.");
+      } catch (err) {
+        console.error("Keep-alive: Failed to refresh Auth Token:", err);
+      }
+    }, intervalMs);
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   const permissions = getPermissions(user?.email); //
 

@@ -32,11 +32,28 @@ const STATUS_COLORS: Record<string, string> = {
   Mitigated: "#883AE1",  // Purple 🟣
   Owned: "#1A2D83",      // Brand Dark Blue 🔮
   "New / Unassigned": "#EF4444", // Red 🔴
+  Risk: "#EF4444",       // Risk mapping fallback color 🔴
   New: "#EF4444",        
   Open: "#EF4444",       
   WIP: "#F59E0B",        
   "On Hold": "#64748B",
   Withdrawn: "#94A3B8"
+};
+
+// Search tags generator for query defenses
+const generateSearchTags = (item: any, additionalPatches: Record<string, any> = {}) => {
+  const merged = { ...item, ...additionalPatches };
+  const textPool = [
+    merged.title || "",
+    merged.description || "",
+    merged.classification || "",
+    merged.roamCategory || "",
+    merged.status || "",
+    merged.projectId || ""
+  ].join(" ").toLowerCase();
+  
+  const words = textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1);
+  return Array.from(new Set(words));
 };
 
 export default function RiskClusterDashboard() {
@@ -112,6 +129,11 @@ export default function RiskClusterDashboard() {
       if (field === "roamCategory") {
         patches.status = value === "New / Unassigned" ? "Identified" : value;
       }
+      
+      // Defend against case-sensitivity drops by recalculating search_tags on update
+      const search_tags = generateSearchTags(selectedItem, patches);
+      patches.search_tags = search_tags;
+
       await updateDoc(docRef, patches);
     } catch (err) {
       console.error("Failed to commit matrix updates:", err);
@@ -266,13 +288,22 @@ export default function RiskClusterDashboard() {
                     data={clusteredData} 
                     shape={(props: any) => {
                       const { cx, cy, payload } = props;
-                      const isSelected = selectedItem?.id === payload.id;
+                      const isSelected = selectedItem?.id === payload?.id;
+                      
+                      // Evaluate exact status color mapping flawlessly to eliminate visual color disconnect
+                      const dotColor = (payload && (
+                        STATUS_COLORS[payload.roamCategory] || 
+                        STATUS_COLORS[payload.status] || 
+                        STATUS_COLORS[payload.classification] || 
+                        payload.nodeColor
+                      )) || "#EF4444";
+
                       return (
                         <circle 
                           cx={cx} 
                           cy={cy} 
                           r={isSelected ? 11 : 8} 
-                          fill={payload.nodeColor} 
+                          fill={dotColor} 
                           stroke={isSelected ? "#000000" : "#FFFFFF"}
                           strokeWidth={2}
                           className="transition-all duration-150 cursor-pointer hover:scale-125 shadow-sm"

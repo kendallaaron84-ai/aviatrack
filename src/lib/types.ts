@@ -53,13 +53,15 @@ export type Project = {
   name: string;
   wbs: string;
   deliveryMethod: DeliveryMethod;
-  status: string;
-  currentPhase: string;
+  status?: string;
+  currentPhase?: string;
   itDisciplines?: ITDiscipline[];
+  glCode?: string;
   glCodeComputerEquipmentOver5k?: string;
   glCodeComputerEquipmentUnder5k?: string;
   glCodeNonComputerEquipmentOver5k?: string;
   glCodeNonComputerEquipmentUnder5k?: string;
   glCodeInstallation?: string;
   changeNarrative?: string;
+  [key: string]: any;
 };

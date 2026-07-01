@@ -74,8 +74,9 @@ export default function AviationBlueprintVault() {
   try {
     // 1. Strip the heavy binary out of storage to stop the billing meter
     if (storageFilePath) {
-      const storageRef = ref(storage, storageFilePath);
-      await deleteObject(storageRef);
+      const storage = getStorage();
+      const fRef = storageRef(storage, storageFilePath);
+      await deleteObject(fRef);
     }
 
     // 2. Update Firestore to preserve the textual tracking record
@@ -96,7 +97,7 @@ export default function AviationBlueprintVault() {
   try {
     const storage = getStorage();
     // Points directly to the file path inside your bucket (e.g., 'bulletins/drawing_326MB.pdf')
-    const fileRef = ref(storage, storageFilePath);
+    const fileRef = storageRef(storage, storageFilePath);
     
     // Generates a secure, direct-to-token Google API download string
     const directUrl = await getDownloadURL(fileRef);

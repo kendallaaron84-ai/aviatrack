@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { ShieldAlert, RefreshCw, Layers, CheckCircle2 } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 
 export default function RaidMatrixDashboard() {
   const [raidItems, setRaidItems] = useState<any[]>([]);

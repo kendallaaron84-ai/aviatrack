@@ -12,6 +12,15 @@ import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase"; 
 import { collection, collectionGroup, onSnapshot, query, orderBy } from "firebase/firestore";
 
+// Definitive Risk Status Colors System
+const STATUS_COLORS: Record<string, string> = {
+  "New / Unassigned": "#EF4444", // Red 🔴
+  "Owned": "#1A2D83",            // Dark Blue 🔮
+  "Mitigated": "#883AE1",        // Purple 🟣
+  "Accepted": "#3B82F6",         // Light Blue 🔵
+  "Resolved": "#10B981"          // Green 🟢
+};
+
 export default function AviationExecutiveControlRoom() {
   const { toast } = useToast();
   const [activeProgram, setActiveProgram] = useState<"ALL" | "TDP" | "CIP">("ALL");
@@ -29,21 +38,17 @@ export default function AviationExecutiveControlRoom() {
   const [filteredProjects, setFilteredProjects] = useState<any[]>([]);
   const [criticalBlockers, setCriticalBlockers] = useState<any[]>([]);
   const [rollups, setRollups] = useState<any[]>([]);
+  const [workbenchStates, setWorkbenchStates] = useState<any[]>([]);
+  const [raidItems, setRaidItems] = useState<any[]>([]);
+  
+  // Timeline Zoom & Pan States
+  const [zoomQuarters, setZoomQuarters] = useState<number>(40);
+  const [panOffset, setPanOffset] = useState<number>(0);
   
   // Global Historical Reports State
   const [globalReports, setGlobalReports] = useState<any[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
-
-  // Static Master S-Curve Baseline (scaled dynamically)
-  const masterSCurveData = [
-    { targetDate: "2023", Planned: 15000000, Actual: 14200000 },
-    { targetDate: "2024", Planned: 42000000, Actual: 39500000 },
-    { targetDate: "2025", Planned: 78000000, Actual: 71000000 },
-    { targetDate: "2026", Planned: 115000000, Actual: 108000000 },
-    { targetDate: "2027", Planned: 160000000, Actual: 148000000 },
-    { targetDate: "2032", Planned: 340000000, Actual: 310000000 }
-  ];
 
   useEffect(() => {
     const unsubProjects = onSnapshot(collection(db, "admin_projects"), (snapshot) => {
@@ -64,8 +69,21 @@ export default function AviationExecutiveControlRoom() {
         return { id: d.id, projectId, ...d.data() };
       }));
     });
+    const unsubWorkbench = onSnapshot(collection(db, "project_workbench_states"), (snapshot) => {
+      setWorkbenchStates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (snapshot) => {
+      setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-    return () => { unsubProjects(); unsubObs(); unsubRollups(); unsubGlobalReports(); };
+    return () => { 
+      unsubProjects(); 
+      unsubObs(); 
+      unsubRollups(); 
+      unsubGlobalReports(); 
+      unsubWorkbench(); 
+      unsubRaid(); 
+    };
   }, []);
 
   // 1. CORE FILTER LOGIC
@@ -100,44 +118,201 @@ export default function AviationExecutiveControlRoom() {
     return globalReports.filter(r => activeProjectIds.includes(r.projectId));
   }, [globalReports, activeProjectIds, selectedProjectIds, activeProgram]);
 
-  const { activeMilestones, activeDependenciesList } = useMemo(() => {
-    const latestReportsMap = new Map();
-    filteredGlobalReports.forEach(report => {
-      if (!latestReportsMap.has(report.projectId)) latestReportsMap.set(report.projectId, report); 
-    });
-    const latestReports = Array.from(latestReportsMap.values());
+  const calculateVarianceDays = (base: string, forecast: string) => {
+    if (!base || !forecast) return 0;
+    return Math.round((new Date(forecast).getTime() - new Date(base).getTime()) / 86400000);
+  };
 
-    const milestones = latestReports.flatMap(r => (r.milestonesSnapshot || []).map((m: any) => ({ ...m, projectId: r.projectId }))).filter(m => m.status !== "Complete"); 
-    const deps = latestReports.flatMap(r => (r.dependenciesSnapshot || []).map((d: any) => ({ ...d, projectId: r.projectId })));
+  // 🟢 3. DERIVE DYNAMIC MILESTONES & DEPENDENCIES FROM LIVE PM WORKBENCHES
+  const { activeMilestones, activeDependenciesList } = useMemo(() => {
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+
+    const milestones = activeStates.flatMap(s => 
+      (s.milestones || []).map((m: any) => ({
+        ...m,
+        projectId: s.id
+      }))
+    ).filter(m => m.status !== "Complete");
+
+    const deps = activeStates.flatMap(s => 
+      (s.dependencies || []).map((d: any) => ({
+        ...d,
+        projectId: s.id
+      }))
+    );
 
     return { activeMilestones: milestones, activeDependenciesList: deps };
-  }, [filteredGlobalReports]);
+  }, [workbenchStates, activeProjectIds]);
 
-  // 3. RECALCULATE KPIs
+  // 🟢 TIMELINE DATE PROJECTION WINDOW (ZOOM & PAN)
+  const timelineWindow = useMemo(() => {
+    const baseStart = new Date("2023-01-01");
+    
+    const startOffsetMonths = panOffset * 3;
+    const endOffsetMonths = (panOffset + zoomQuarters) * 3;
+    
+    const startDate = new Date(baseStart.getTime());
+    startDate.setMonth(startDate.getMonth() + startOffsetMonths);
+    
+    const endDate = new Date(baseStart.getTime());
+    endDate.setMonth(endDate.getMonth() + endOffsetMonths);
+    
+    const minTime = startDate.getTime();
+    const maxTime = endDate.getTime();
+    
+    const getQuarterLabel = (quarterIndex: number) => {
+      const year = 2023 + Math.floor(quarterIndex / 4);
+      const q = (quarterIndex % 4) + 1;
+      return `Q${q} ${year}`;
+    };
+    
+    const startLabel = getQuarterLabel(panOffset);
+    const endLabel = getQuarterLabel(panOffset + zoomQuarters - 1);
+    
+    return {
+      minTime,
+      maxTime,
+      startLabel,
+      endLabel
+    };
+  }, [zoomQuarters, panOffset]);
+
+  // Constraint 2: Reactive coordinate projection helper wrapped in standard React useMemo hook
+  const getPos = useMemo(() => {
+    const { minTime, maxTime } = timelineWindow;
+    return (dateStr: string) => {
+      if (!dateStr) return -10;
+      const t = new Date(dateStr).getTime();
+      if (t < minTime || t > maxTime) return -100; // flag off-screen milestones
+      return Math.max(0, Math.min(100, ((t - minTime) / (maxTime - minTime)) * 100));
+    };
+  }, [timelineWindow]);
+
+  // 🟢 4. RECALCULATE KPIs WITH LIVE CONSTRAINTS
   const totalMasterBudget = allProjects.reduce((acc, curr) => acc + (curr.budget || 0), 0) || 1;
   const totalBudget = filteredProjects.reduce((acc, curr) => acc + (curr.budget || 0), 0);
   const totalActuals = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.actualCost || 0), 0) || (totalBudget * 0.42); 
   const activeChangeOrders = filteredProjects.filter(p => p.isUnplannedInjection).length;
-  const activeDependenciesCount = activeDependenciesList.filter(b => b.status === "Active Block").length;
 
-  // 4. DYNAMIC S-CURVE & RISK REGISTER
-  const budgetRatio = totalBudget / totalMasterBudget;
-  const dynamicSCurveData = masterSCurveData.map(d => ({
-    targetDate: d.targetDate,
-    Planned: d.Planned * budgetRatio,
-    Actual: d.Actual * budgetRatio
-  }));
+  // Sum the quantity of milestones in live project_workbench_states matching type === "Construction" and showOnDashboard === true
+  const constructionDependenciesCount = useMemo(() => {
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+    let count = 0;
+    activeStates.forEach(s => {
+      (s.milestones || []).forEach((m: any) => {
+        if (m.type === "Construction" && m.showOnDashboard === true) {
+          count++;
+        }
+      });
+    });
+    return count;
+  }, [workbenchStates, activeProjectIds]);
 
-  // 🟢 FIXED RISK COUPLING: Dynamically maps the bi-weekly status report text (currentRisksText) right onto your threat matrix card layout
-  const dynamicRisks = filteredRollups
-    .filter(r => r.currentRisksText && r.currentRisksText.trim() !== "")
-    .map(r => ({
-      id: `RSK-${r.projectId}`,
+  const activeDependenciesCount = constructionDependenciesCount;
+
+  // 🟢 5. DYNAMIC S-CURVE GENERATION WITH ACCURATE HORIZONS & SMOOTHSTEP INTERPOLATION
+  const dynamicSCurveData = useMemo(() => {
+    const startYear = 2023;
+    let endYear = 2032; // Default limit
+    
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+    
+    if (activeProjectIds.length === 1 && activeStates.length > 0) {
+      const state = activeStates[0];
+      const milestones = state.milestones || [];
+      
+      if (milestones.length > 0) {
+        const allHaveBaselineEnd = milestones.every((m: any) => m.baselineEnd && m.baselineEnd.trim() !== "");
+        
+        let targetDateStr = "";
+        if (allHaveBaselineEnd) {
+          const forecastDates = milestones.map((m: any) => m.forecastEnd).filter((d: string) => d && d.trim() !== "");
+          if (forecastDates.length > 0) {
+            targetDateStr = forecastDates.reduce((max: string, curr: string) => curr > max ? curr : max);
+          }
+        } else {
+          const baselineDates = milestones.map((m: any) => m.baselineEnd).filter((d: string) => d && d.trim() !== "");
+          if (baselineDates.length > 0) {
+            targetDateStr = baselineDates.reduce((max: string, curr: string) => curr > max ? curr : max);
+          }
+        }
+        
+        if (targetDateStr) {
+          const parsedYear = new Date(targetDateStr).getFullYear();
+          if (!isNaN(parsedYear) && parsedYear >= 2023) {
+            endYear = parsedYear;
+          }
+        }
+      }
+    } else {
+      // All Portfolio view: use max baselineEnd across all project states
+      let latestBaselineDateStr = "";
+      activeStates.forEach(s => {
+        const milestones = s.milestones || [];
+        milestones.forEach((m: any) => {
+          if (m.baselineEnd && m.baselineEnd.trim() !== "") {
+            if (!latestBaselineDateStr || m.baselineEnd > latestBaselineDateStr) {
+              latestBaselineDateStr = m.baselineEnd;
+            }
+          }
+        });
+      });
+      
+      if (latestBaselineDateStr) {
+         const parsedYear = new Date(latestBaselineDateStr).getFullYear();
+         if (!isNaN(parsedYear) && parsedYear >= 2023) {
+           endYear = parsedYear;
+         }
+      }
+    }
+    
+    endYear = Math.max(2023, Math.min(2035, endYear));
+    
+    const points = [];
+    const totalYears = endYear - startYear;
+    
+    for (let y = startYear; y <= endYear; y++) {
+      const t = totalYears === 0 ? 1 : (y - startYear) / totalYears;
+      const smoothT = 3 * t * t - 2 * t * t * t; // Smoothstep S-curve cumulative curve
+      const factor = 0.044 + 0.956 * smoothT;
+      
+      points.push({
+        targetDate: `${y}`,
+        Planned: Math.round(totalBudget * factor),
+        Actual: Math.round(totalActuals * factor)
+      });
+    }
+    
+    return points;
+  }, [workbenchStates, activeProjectIds, totalBudget, totalActuals]);
+
+  // 🟢 6. DYNAMIC ACTIVE THREAT FILTERING (RAID MATRIX COUPLING)
+  const dynamicRisks = useMemo(() => {
+    const list = raidItems.filter(item => {
+      const projectMatches = activeProjectIds.includes(item.projectId);
+      if (!projectMatches) return false;
+
+      // Exclude items that are resolved or closed
+      const isResolved = ["Resolved", "Resolved - Complete", "Closed"].includes(item.status);
+      if (isResolved) return false;
+
+      // Ensure classification or type is explicitly "Risk"
+      const isRisk = item.roamCategory === "Risk" || item.classification === "Risk";
+      if (!isRisk) return false;
+
+      return true;
+    });
+
+    return list.map(r => ({
+      id: r.id?.startsWith("RSK-") ? r.id : `RSK-${r.id?.slice(0, 4) || "UNK"}`,
       project: r.projectId,
-      threat: r.currentRisksText,
-      impact: r.statusHealthIndicator === "Critical Risk" ? "Critical" : "High",
-      spec: r.projectName ? r.projectName.split(" ")[0] : "IT"
-    })).slice(0, 5); 
+      threat: r.description || r.title || "Unspecified Threat",
+      impact: r.importance || r.impactLevel || "High",
+      spec: r.classification || r.roamCategory || "Risk",
+      status: r.status || "New / Unassigned",
+      roamCategory: r.roamCategory || r.status || "New / Unassigned"
+    }));
+  }, [raidItems, activeProjectIds]); 
 
   // Pagination Logic 
   const totalPages = Math.max(1, Math.ceil(filteredGlobalReports.length / itemsPerPage));
@@ -145,10 +320,7 @@ export default function AviationExecutiveControlRoom() {
   const handleNextPage = () => setCurrentPage(p => Math.min(p + 1, totalPages));
   const handlePrevPage = () => setCurrentPage(p => Math.max(p - 1, 1));
 
-  const calculateVarianceDays = (base: string, forecast: string) => {
-    if (!base || !forecast) return 0;
-    return Math.round((new Date(forecast).getTime() - new Date(base).getTime()) / 86400000);
-  };
+
 
   // 5. REPORT GENERATOR (OPTIMISTIC PERFORMANCE UPGRADE)
   const handleGenerateProgramReport = () => {
@@ -312,26 +484,65 @@ export default function AviationExecutiveControlRoom() {
 
       {/* DYNAMIC PORTFOLIO TIMELINE (3 RAILS) */}
       <Card className="border-slate-200 shadow-sm rounded-sm bg-white mt-6">
-        <CardHeader className="bg-slate-50 border-b py-3">
-          <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-            <Activity className="h-4 w-4 text-[#142E88]" /> Dynamic Portfolio Timeline
-          </CardTitle>
-          <CardDescription className="text-[11px]">Real-time milestone and dependency mapping mapped directly from active PM Workbenches.</CardDescription>
+        <CardHeader className="bg-slate-50 border-b py-3 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
+              <Activity className="h-4 w-4 text-[#142E88]" /> Dynamic Portfolio Timeline
+            </CardTitle>
+            <CardDescription className="text-[11px]">Real-time milestone and dependency mapping mapped directly from active PM Workbenches.</CardDescription>
+          </div>
+          
+          {/* SLIDER CONTROLS */}
+          <div className="flex flex-wrap items-center gap-4 bg-white p-2 border border-slate-200 shadow-xs text-xs font-semibold rounded-sm">
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Zoom Quarters:</span>
+              <input 
+                type="range" 
+                min="1" 
+                max="40" 
+                value={zoomQuarters} 
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setZoomQuarters(val);
+                  if (panOffset + val > 40) {
+                    setPanOffset(40 - val);
+                  }
+                }}
+                className="w-20 accent-[#142E88] h-1 bg-slate-200 rounded-lg cursor-pointer"
+              />
+              <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px] text-slate-700">{zoomQuarters}Q</span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Pan Offset:</span>
+              <input 
+                type="range" 
+                min="0" 
+                max={40 - zoomQuarters} 
+                value={panOffset} 
+                onChange={(e) => setPanOffset(parseInt(e.target.value))}
+                className="w-20 accent-[#142E88] h-1 bg-slate-200 rounded-lg cursor-pointer"
+                disabled={zoomQuarters === 40}
+              />
+              <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px] text-slate-700">{panOffset}Q</span>
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="p-6 space-y-8 relative overflow-hidden">
           <div className="absolute inset-x-6 top-2 flex justify-between text-[10px] font-mono font-black text-slate-400">
-            <span>2023</span><span>2025</span><span>2027</span><span>2029</span><span>2032</span>
+            <span className="text-[#142E88] font-bold">{timelineWindow.startLabel}</span>
+            <span className="text-slate-400 font-normal">Zoom Window Bounds</span>
+            <span className="text-[#142E88] font-bold">{timelineWindow.endLabel}</span>
           </div>
           {(() => {
-            const minTime = new Date("2023-01-01").getTime();
-            const maxTime = new Date("2032-12-31").getTime();
-            const getPos = (dateStr: string) => {
-              if (!dateStr) return -10;
-              const t = new Date(dateStr).getTime();
-              return Math.max(0, Math.min(100, ((t - minTime) / (maxTime - minTime)) * 100));
-            };
-            const tdpMilestones = activeMilestones.filter(m => m.projectId.includes("TDP"));
-            const cipMilestones = activeMilestones.filter(m => m.projectId.includes("CIP"));
+            const tdpMilestones = activeMilestones.filter(m => {
+              const proj = allProjects.find(p => p.id === m.projectId);
+              return proj?.program?.toUpperCase().trim() === "TDP";
+            });
+            const cipMilestones = activeMilestones.filter(m => {
+              const proj = allProjects.find(p => p.id === m.projectId);
+              return proj?.program?.toUpperCase().trim() === "CIP";
+            });
             const mappedDependencies = activeDependenciesList.map(dep => {
               const linked = activeMilestones.find(m => m.name === dep.linkedMilestone && m.projectId === dep.projectId);
               return { ...dep, date: linked ? linked.forecastEnd || linked.baselineEnd : null };
@@ -339,42 +550,132 @@ export default function AviationExecutiveControlRoom() {
 
             return (
               <div className="pt-8 space-y-8">
-                <div className="space-y-2 relative group">
+                {/* TDP TRACK */}
+                <div className="space-y-2 relative">
                   <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest block font-mono">TDP Track Rail (Milestones)</span>
                   <div className="h-1.5 bg-slate-100 rounded-full relative w-full flex items-center">
-                    {tdpMilestones.map((m, i) => (
-                      <div key={`tdp-${i}`} className="absolute h-3.5 w-3.5 rounded-full bg-blue-600 border-2 border-white shadow-xs cursor-help hover:scale-150 transition-transform z-10 hover:z-30" style={{ left: `${getPos(m.forecastEnd || m.baselineEnd)}%`, transform: 'translateX(-50%)' }}>
-                         <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[9px] py-1 px-2 rounded-sm pointer-events-none transition-opacity">
-                           <strong className="text-blue-300">{m.projectId}</strong>: {m.name}
-                         </div>
-                      </div>
-                    ))}
+                    {tdpMilestones.map((m, i) => {
+                      const leftPercent = getPos(m.forecastEnd || m.baselineEnd);
+                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
+
+                      const parentProject = allProjects.find(p => p.id === m.projectId);
+                      const projectName = parentProject ? parentProject.name : "Unknown Project";
+                      const variance = calculateVarianceDays(m.baselineEnd, m.forecastEnd);
+
+                      return (
+                        <div key={`tdp-${i}`} className="group/milestone absolute h-3.5 w-3.5 rounded-full bg-blue-600 border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30" style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
+                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
+                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{m.projectId}</span>
+                               <span className="bg-slate-800 text-slate-300 font-bold px-1 py-0.5 rounded text-[9px] uppercase font-sans">{m.status}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
+                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Milestone</span>
+                               <span className="text-slate-100 font-medium font-sans">{m.name}</span>
+                             </div>
+                             <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-[10px]">
+                               <div>
+                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">End Date</span>
+                                 <span className="font-mono font-medium text-slate-200">{m.forecastEnd || m.baselineEnd || "N/A"}</span>
+                               </div>
+                               <div>
+                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Variance</span>
+                                 <span className={`font-mono font-bold ${variance > 0 ? "text-red-400" : variance < 0 ? "text-emerald-400" : "text-slate-300"}`}>
+                                   {variance > 0 ? `+${variance}d` : `${variance}d`}
+                                 </span>
+                               </div>
+                             </div>
+                           </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="space-y-2 relative group">
+                {/* DEPENDENCIES TRACK */}
+                <div className="space-y-2 relative">
                   <span className="text-[10px] font-black text-emerald-700 uppercase tracking-widest block font-mono">Cross-Track Dependencies & Blockers</span>
                   <div className="h-1 bg-emerald-50 rounded-full relative w-full flex items-center border border-emerald-100/50">
-                    {mappedDependencies.map((dep, i) => (
-                      <div key={`dep-${i}`} className={`absolute h-3.5 w-3.5 rounded-sm border-2 border-white shadow-xs cursor-help hover:scale-150 transition-transform z-10 hover:z-30 ${dep.status === 'Active Block' ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} style={{ left: `${getPos(dep.date)}%`, transform: 'translateX(-50%)' }}>
-                         <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[9px] py-1 px-2 rounded-sm pointer-events-none transition-opacity">
-                           <strong className={dep.status === 'Active Block' ? 'text-red-400' : 'text-emerald-400'}>{dep.status}</strong> | {dep.targetEntity}
-                         </div>
-                      </div>
-                    ))}
+                    {mappedDependencies.map((dep, i) => {
+                      const leftPercent = getPos(dep.date);
+                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
+
+                      const parentProject = allProjects.find(p => p.id === dep.projectId);
+                      const projectName = parentProject ? parentProject.name : "Unknown Project";
+
+                      return (
+                        <div key={`dep-${i}`} className={`group/milestone absolute h-3.5 w-3.5 rounded-sm border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30 ${dep.status === 'Active Block' ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
+                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
+                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{dep.projectId}</span>
+                               <span className={`font-bold px-1.5 py-0.5 rounded text-[9px] uppercase font-sans ${dep.status === 'Active Block' ? 'bg-red-950 text-red-400' : 'bg-emerald-950 text-emerald-400'}`}>{dep.status}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
+                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Target Entity</span>
+                               <span className="text-slate-100 font-medium font-sans">{dep.targetEntity}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Task / Activity</span>
+                               <span className="text-slate-200 font-normal font-sans text-[10px] leading-tight block">{dep.activityTask || "Unspecified"}</span>
+                             </div>
+                           </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="space-y-2 relative group">
+                {/* CIP TRACK */}
+                <div className="space-y-2 relative">
                   <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest block font-mono">CIP Track Rail (Milestones)</span>
                   <div className="h-1.5 bg-slate-100 rounded-full relative w-full flex items-center">
-                    {cipMilestones.map((m, i) => (
-                      <div key={`cip-${i}`} className="absolute h-3.5 w-3.5 rounded-full bg-purple-600 border-2 border-white shadow-xs cursor-help hover:scale-150 transition-transform z-10 hover:z-30" style={{ left: `${getPos(m.forecastEnd || m.baselineEnd)}%`, transform: 'translateX(-50%)' }}>
-                         <div className="opacity-0 group-hover:opacity-100 absolute top-full mt-2 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[9px] py-1 px-2 rounded-sm pointer-events-none transition-opacity">
-                           <strong className="text-purple-300">{m.projectId}</strong>: {m.name}
-                         </div>
-                      </div>
-                    ))}
+                    {cipMilestones.map((m, i) => {
+                      const leftPercent = getPos(m.forecastEnd || m.baselineEnd);
+                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
+
+                      const parentProject = allProjects.find(p => p.id === m.projectId);
+                      const projectName = parentProject ? parentProject.name : "Unknown Project";
+                      const variance = calculateVarianceDays(m.baselineEnd, m.forecastEnd);
+
+                      return (
+                        <div key={`cip-${i}`} className="group/milestone absolute h-3.5 w-3.5 rounded-full bg-purple-600 border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30" style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
+                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
+                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{m.projectId}</span>
+                               <span className="bg-slate-800 text-slate-300 font-bold px-1 py-0.5 rounded text-[9px] uppercase font-sans">{m.status}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
+                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
+                             </div>
+                             <div>
+                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Milestone</span>
+                               <span className="text-slate-100 font-medium font-sans">{m.name}</span>
+                             </div>
+                             <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-[10px]">
+                               <div>
+                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">End Date</span>
+                                 <span className="font-mono font-medium text-slate-200">{m.forecastEnd || m.baselineEnd || "N/A"}</span>
+                               </div>
+                               <div>
+                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Variance</span>
+                                 <span className={`font-mono font-bold ${variance > 0 ? "text-red-400" : variance < 0 ? "text-emerald-400" : "text-slate-300"}`}>
+                                   {variance > 0 ? `+${variance}d` : `${variance}d`}
+                                 </span>
+                               </div>
+                             </div>
+                           </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -486,8 +787,17 @@ export default function AviationExecutiveControlRoom() {
               dynamicRisks.map((risk) => (
                 <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono font-bold text-slate-800">{risk.id} <Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1 shadow-none">{risk.spec}</Badge></span>
-                    <Badge className={`text-[9px] font-bold rounded-xs shadow-none ${risk.impact === 'Critical' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>{risk.impact}</Badge>
+                    <span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                      {risk.id} 
+                      <Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge>
+                      <span 
+                        className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase tracking-wider font-sans shrink-0 shadow-xs"
+                        style={{ backgroundColor: STATUS_COLORS[risk.roamCategory] || STATUS_COLORS[risk.status] || '#EF4444' }}
+                      >
+                        {risk.roamCategory}
+                      </span>
+                    </span>
+                    <Badge className={`text-[9px] font-bold rounded-xs shadow-none ${risk.impact === 'Critical' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>{risk.impact}</Badge>
                   </div>
                   <h4 className="font-semibold text-slate-700 leading-tight">{risk.threat}</h4>
                 </div>
