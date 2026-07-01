@@ -1,63 +1,87 @@
-import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+// File: src/app/api/generate-report/route.ts
 
-// Initialize the Google AI SDK with a secure server-side environment variable
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+export const dynamic = "force-dynamic";
 
-export async function POST(req: Request) {
+import { NextResponse } from "next/server";
+import { getFirestore } from "firebase-admin/firestore";
+import { getApps, initializeApp, cert } from "firebase-admin/app";
+
+export async function POST(request: Request) {
   try {
-    const { journalEntries, reportingPeriod } = await req.json();
+    const { reportType, projectId, dateRange, options } = await request.json();
+    
+    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+    const fbProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    
+    // Clean environment strings for certificate loading
+    const rawPrivateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+    const privateKey = rawPrivateKey
+      ? rawPrivateKey.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, '\n')
+      : undefined;
 
-    if (!journalEntries || journalEntries.length === 0) {
-      return NextResponse.json({ error: "No journal entries provided for this period." }, { status: 400 });
+    if (getApps().length === 0) {
+      if (!clientEmail || !privateKey || !fbProjectId) {
+        return NextResponse.json({ error: "Missing critical environment configurations." }, { status: 400 });
+      }
+      initializeApp({
+        credential: cert({ projectId: fbProjectId, clientEmail, privateKey }),
+      });
     }
 
-    // Combine all raw journal logs into a single text block for the AI to read
-    const combinedLogs = journalEntries.map((log: any) => 
-      `[${log.timestamp} - ${log.projectID}]: ${log.text}`
-    ).join('\n');
-
-    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
-
-    // The System Prompt: This is the secret to forcing a clean, executive format
-    const prompt = `
-      You are a Senior IT Portfolio Director. I am providing you with a chronological list of raw project manager journal entries for the period of ${reportingPeriod}.
-      
-      Your task is to analyze these logs and generate a structured executive summary. 
-      You MUST return the data strictly as a JSON object matching this exact structure, with no markdown formatting or conversational text outside the JSON:
-      
-      {
-        "consolidatedRisksAndResolutions": [
-          "Macro risk 1 and resolution summary",
-          "Macro risk 2 and resolution summary"
-        ],
-        "projectSummaries": [
-          {
-            "projectId": "Project Identifier",
-            "lookAhead": "Summarized 3-week look ahead based on recent trajectory.",
-            "risks": "Specific risks identified in logs.",
-            "impact": "Potential impact to schedule or budget.",
-            "resolutionPlan": "The mitigation steps being taken.",
-            "actionItems": ["Action 1", "Action 2"]
-          }
-        ]
-      }
-
-      Raw Journal Logs to Analyze:
-      ${combinedLogs}
-    `;
-
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
+    const db = getFirestore();
     
-    // Clean the response to ensure it's pure JSON
-    const jsonString = responseText.replace(/```json\n?|\n?```/g, '').trim();
-    const parsedData = JSON.parse(jsonString);
+    // Fetch active registry matrices
+    const raidSnapshot = await db.collection("raid_matrix").get();
+    const raidItems = raidSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    return NextResponse.json(parsedData);
+    const projectSnapshot = projectId && projectId !== "all" 
+      ? await db.collection("projects").doc(projectId).get()
+      : null;
+    const projectData = projectSnapshot?.exists ? projectSnapshot.data() : null;
+    const projectName = projectData?.name || "All Projects Portfolio";
 
-  } catch (error) {
-    console.error("AI Generation Failed:", error);
-    return NextResponse.json({ error: "Failed to generate report" }, { status: 500 });
+    // Build assessment report content block
+    let reportText = `=========================================\n`;
+    reportText += `       PROGRAM ASSESSMENT STATUS REPORT   \n`;
+    reportText += `=========================================\n\n`;
+    reportText += `Report Type: ${reportType || "Status Summary"}\n`;
+    reportText += `Target Scope: ${projectName}\n`;
+    reportText += `Generated At: ${new Date().toLocaleString()}\n`;
+    reportText += `-----------------------------------------\n\n`;
+
+    reportText += `[Metrics Summary]\n`;
+    const counts = { Risk: 0, Assumption: 0, Issue: 0, Dependency: 0 };
+    raidItems.forEach((item: any) => {
+      const cls = item.classification;
+      if (cls in counts) {
+        counts[cls as keyof typeof counts]++;
+      }
+    });
+
+    reportText += `- Active Risks: ${counts.Risk}\n`;
+    reportText += `- Active Assumptions: ${counts.Assumption}\n`;
+    reportText += `- Active Issues: ${counts.Issue}\n`;
+    reportText += `- Active Dependencies: ${counts.Dependency}\n`;
+    reportText += `\nDetailed RAID Matrices:\n`;
+
+    raidItems.forEach((item: any, idx: number) => {
+      reportText += `${idx + 1}. [${item.classification}] ${item.title} (Owner: ${item.assignedOwner || "Unassigned"})\n`;
+      reportText += `   Description: ${item.description || "No description provided."}\n`;
+      reportText += `   Probability Score: ${item.probability || "N/A"} | Importance: ${item.importance || "N/A"}\n\n`;
+    });
+
+    // Clean scrubbing: Removed all literal text references and hyper-links to AviaTrack/AviaITrack completely.
+    reportText += `-----------------------------------------\n`;
+    reportText += `End of Program Assessment Status Report\n`;
+    reportText += `=========================================\n`;
+
+    return NextResponse.json({
+      success: true,
+      reportText,
+      projectName
+    });
+  } catch (error: any) {
+    console.error("Report Generation Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

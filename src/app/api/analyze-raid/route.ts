@@ -12,7 +12,7 @@ export async function POST() {
     const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
     
-    // 🔐 BULLETPROOF KEY SANITIZATION: Removes ghost edge-case quotes and forces newline evaluation
+    // 🔐 Clean private key of any hidden enclosing string formatting from environments
     const rawPrivateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
     const privateKey = rawPrivateKey
       ? rawPrivateKey.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, '\n')
@@ -20,16 +20,15 @@ export async function POST() {
 
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
-    // Handle empty environments / missing configurations gracefully
     if (!clientEmail || !privateKey || !projectId) {
       return NextResponse.json({ 
-        error: "Missing critical Firebase Admin environment variables at runtime. Please check GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY, and NEXT_PUBLIC_FIREBASE_PROJECT_ID." 
+        error: "Missing critical Firebase Admin environment variables at runtime." 
       }, { status: 400 });
     }
 
     if (!geminiApiKey) {
       return NextResponse.json({
-        error: "Missing critical Gemini API Key. Please configure GEMINI_API_KEY or GOOGLE_API_KEY."
+        error: "Missing critical Gemini API Key."
       }, { status: 400 });
     }
 
@@ -47,7 +46,7 @@ export async function POST() {
     const configSnap = await adminDb.collection("admin_settings").doc("risk_profile").get();
     const systemInstructionOverride = configSnap.exists 
       ? configSnap.data()?.riskPrompt 
-      : "You are an expert airport systems construction risk analyzer.";
+      : "You are an expert infrastructure construction systems risk evaluator.";
 
     // Fetch up to 25 items from each source concurrently
     const [journalSnapshot, fieldSnapshot] = await Promise.all([
@@ -59,51 +58,30 @@ export async function POST() {
 
     const itemsToProcess: string[] = [];
 
-    // Source A: Extract from Project Journal logs
+    // Source A: Extract from Project Journal logs (/project_journals/{projectId}/entries/{docId})
     journalSnapshot.forEach((doc) => {
       const data = doc.data();
-      // Back-trace the project ID from the path: /project_journals/{projectId}/entries/{docId}
       const pathSegments = doc.ref.path.split("/");
-      const inferredProjectId = pathSegments[1] || "Global";
+      const inferredProjectId = pathSegments[1] || "Global Context";
 
       if (data.text) {
         itemsToProcess.push(`[ID: ${doc.id}][Project: ${inferredProjectId}][Source: Project Journal] Text: ${data.text}`);
       }
     });
 
-    // Source B: Extract from Field Observations dropdown selections with concurrent parent project resolution
-    const parentRefsMap = new Map<string, any>();
-    fieldSnapshot.forEach((doc) => {
-      const parentRef = doc.ref.parent.parent;
-      if (parentRef) {
-        parentRefsMap.set(parentRef.id, parentRef);
-      }
-    });
-
-    const parentSnaps = parentRefsMap.size > 0 
-      ? await Promise.all(Array.from(parentRefsMap.values()).map((ref: any) => ref.get()))
-      : [];
-
-    const parentDataMap = new Map<string, any>();
-    parentSnaps.forEach((snap: any) => {
-      if (snap.exists) {
-        parentDataMap.set(snap.id, snap.data());
-      }
-    });
-
+    // Source B: Extract from nested field observation sub-collections (/field_observations/{obsId}/sub_observations/{subId})
     fieldSnapshot.forEach((doc) => {
       const data = doc.data();
-      const parentRef = doc.ref.parent.parent;
-      const parentData = parentRef ? parentDataMap.get(parentRef.id) : null;
-      const inferredProjectId = parentData?.projectId || "Global";
+      const pathSegments = doc.ref.path.split("/");
+      const parentObservationId = pathSegments[1] || "Global";
 
       if (data.description) {
-        itemsToProcess.push(`[ID: ${doc.id}][Project: ${inferredProjectId}][Source: Field Observation] Description: ${data.description}`);
+        itemsToProcess.push(`[ID: ${doc.id}][ParentObs: ${parentObservationId}][Source: Field Observation] Description: ${data.description}`);
       }
     });
 
     if (itemsToProcess.length === 0) {
-      return NextResponse.json({ message: "No new data pool blocks found to parse." });
+      return NextResponse.json({ message: "No active text logs or risk updates found to evaluate." });
     }
 
     const textToAnalyze = itemsToProcess.join("\n\n");
@@ -141,8 +119,79 @@ export async function POST() {
 
     let jsonText = response.text || "{\"items\":[]}";
     
-    // Clean up potential markdown formatting block backticks around AI JSON responses before parsing safely
+    // 🛡️ GLITCH-PROOF STRING CLEANING: Strips Markdown blocks safely using standard string slicing instead of regular expressions
     jsonText = jsonText.trim();
     if (jsonText.startsWith("```")) {
-      jsonText = jsonText.replace(/^
-http://googleusercontent.com/immersive_entry_chip/0
+      const firstLineBreak = jsonText.indexOf("\n");
+      if (firstLineBreak !== -1) {
+        jsonText = jsonText.substring(firstLineBreak + 1);
+      } else {
+        jsonText = jsonText.substring(3);
+      }
+    }
+    if (jsonText.endsWith("```")) {
+      jsonText = jsonText.substring(0, jsonText.length - 3);
+    }
+    jsonText = jsonText.trim();
+
+    const { items } = JSON.parse(jsonText);
+
+    const batch = adminDb.batch();
+    
+    for (const item of items) {
+      const raidRef = adminDb.collection("raid_matrix").doc();
+      const assignedOwner = item.classification === "Dependency" || item.classification === "Issue" 
+        ? "IT Consultant" 
+        : "ORAT Team";
+
+      const rawProb = parseInt(item.probability);
+      const parsedProbability = isNaN(rawProb) ? 2 : Math.max(1, Math.min(4, rawProb));
+      const importanceVal = item.importance || "Medium";
+
+      const title = item.title || "";
+      const description = item.description || "";
+      const classification = item.classification || "Risk";
+      const roamCategory = classification;
+      const projectId = item.projectId || "Global";
+      const status = "Identified";
+
+      const textPool = [title, description, classification, roamCategory, status, projectId].join(" ").toLowerCase();
+      const search_tags = Array.from(new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
+
+      batch.set(raidRef, {
+        sourceReferenceId: item.sourceReferenceId || "",
+        projectId,
+        sourceType: item.sourceType || "Field Observation",
+        title,
+        description,
+        classification,
+        roamCategory,
+        importance: importanceVal,
+        impactLevel: importanceVal, // populate both keys for cross-layout support
+        probability: parsedProbability,
+        status,
+        assignedOwner,
+        isItOwned: assignedOwner === "IT Consultant",
+        dispositionNotes: "",
+        historicalComments: [],
+        sourceContextLink: item.sourceType === "Project Journal" 
+          ? "PM Daily Log / Workbench Tracker" 
+          : "Field Site Inspection Update", 
+        analyzedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        search_tags
+      });
+    }
+    
+    await batch.commit();
+
+    return NextResponse.json({ 
+      success: true, 
+      processedCount: items ? items.length : 0 
+    });
+
+  } catch (error: any) {
+    console.error("RAID Pipeline Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}

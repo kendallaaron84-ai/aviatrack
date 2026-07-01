@@ -1,403 +1,210 @@
 // File: src/app/dashboard/layout.tsx
-"use client";
+'use client';
 
-import { useState, useEffect } from "react";
-import { getPermissions } from "@/lib/security"; //
-import { initiateGoogleSignIn } from "@/firebase/non-blocking-login"; // Make sure the relative path points to your non-blocking file
-import Link from "next/link"; //
-import { Plane, LayoutDashboard, FileText, Network, HardHat, FileSpreadsheet, ShieldCheck, LogOut, PieChart, Library, Eye, EyeOff, Bell, MessageSquare, AlertCircle, Layers, Globe } from "lucide-react";import { Button } from "@/components/ui/button"; //
-import { auth, db } from "@/lib/firebase"; //
+import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { 
+  LayoutDashboard, 
+  Database, 
+  Map, 
+  Briefcase, 
+  FileText, 
+  Settings, 
+  ShieldAlert, 
+  User, 
+  LogOut, 
+  Menu, 
+  X,
+  Layers,
+  Activity
+} from 'lucide-react';
+import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
+import { initializeApp, getApps } from 'firebase/app';
 
-// Native Firebase Operations
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User, signInWithPopup, GoogleAuthProvider } from "firebase/auth"; //
-import { collectionGroup, query, where, onSnapshot, doc, setDoc } from "firebase/firestore";
+// Safe environment loader
+const firebaseConfig = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ? {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+} : null;
 
-export function GlobalHeaderNotificationHub() {
-  const [notifications, setNotifications] = useState<any[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const currentUserEmail = auth.currentUser?.email || "";
-  const username = currentUserEmail.split("@")[0].toLowerCase();
-  
-  // Clean single declaration for the hub
-  const userRole = getPermissions(currentUserEmail)?.role;
-
-  useEffect(() => {
-    if (!currentUserEmail) return;
-
-    // FIRESTORE GROUP QUERY: Monitors active task mentions tagged to your profile layout
-    const q = query(
-      collectionGroup(db, "portfolio_questions"),
-      where("mentionFlag", "==", true),
-      where("notifiedTarget", "==", username)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const activeAlerts = snapshot.docs.map(d => {
-        const data = d.data();
-        const pathSegments = d.ref.path.split("/");
-        const observationId = pathSegments[1];
-
-        return {
-          id: d.id,
-          docPath: d.ref.path, 
-          observationId,
-          text: data.text,
-          author: data.author?.split("@")[0] || "Team Member",
-          createdAt: data.createdAt
-        };
-      });
-
-      activeAlerts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setNotifications(activeAlerts);
-    });
-
-    return () => unsubscribe();
-  }, [currentUserEmail, username]);
-
-  const handleNotificationClick = async (docPath: string) => {
-    try {
-      await setDoc(doc(db, docPath), { mentionFlag: false }, { merge: true });
-      setIsOpen(false); 
-    } catch (err) {
-      console.error("Failed to clear operational notification token:", err);
-    }
-  };
-
-  const unreadCount = notifications.length;
-
-  return (
-    <div className="relative">
-      <button 
-        onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 text-slate-400 hover:text-white transition-colors focus:outline-none cursor-pointer rounded-full hover:bg-slate-800"
-      >
-        <Bell className="h-4 w-4" />
-        {unreadCount > 0 && (
-          <span className="absolute top-1 right-1 h-3.5 w-3.5 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center animate-bounce">
-            {unreadCount}
-          </span>
-        )}
-      </button>
-
-      {isOpen && (
-        <div className="absolute left-0 md:left-auto md:right-0 mt-2 w-72 bg-white border border-slate-200 shadow-xl rounded-sm z-50 overflow-hidden font-sans text-slate-900">
-          <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Workspace Mentions</span>
-            <span className="text-[9px] bg-blue-50 text-[#142E88] px-1.5 py-0.5 rounded-xs font-mono font-bold">
-              {unreadCount} New
-            </span>
-          </div>
-
-          <div className="divide-y divide-slate-100 max-h-[260px] overflow-y-auto">
-            {notifications.length === 0 ? (
-              <div className="p-4 text-center text-xs text-slate-400 italic">
-                No active task mentions tagged to your profile layout.
-              </div>
-            ) : (
-              notifications.map((alert) => (
-                <Link
-                  key={alert.id}
-                  href={`/dashboard/review/${alert.observationId}`}
-                  onClick={() => handleNotificationClick(alert.docPath)} 
-                  className="p-3 block hover:bg-slate-50/80 transition-colors group"
-                >
-                  <div className="flex gap-2 items-start text-xs">
-                    <MessageSquare className="h-3.5 w-3.5 text-[#3c38d4] mt-0.5 shrink-0" />
-                    <div className="space-y-1 min-w-0 flex-1">
-                      <p className="text-slate-600 font-medium leading-relaxed">
-                        <strong className="text-slate-900">@{alert.author}</strong>: "{alert.text}"
-                      </p>
-                      <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono pt-0.5">
-                        <span className="font-bold text-[#142E88] group-hover:underline">
-                          Open Record →
-                        </span>
-                        <span>
-                          {alert.createdAt ? new Date(alert.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ""}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </Link>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+if (firebaseConfig && getApps().length === 0) {
+  initializeApp(firebaseConfig);
 }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null); //
-  const [isInitializing, setIsInitializing] = useState(true); //
-  const currentUserEmail = auth.currentUser?.email || "";
-  const userRole = getPermissions(currentUserEmail)?.role;
-  
-  const [email, setEmail] = useState(""); //
-  const [password, setPassword] = useState(""); //
-  const [showPassword, setShowPassword] = useState(false); //
-  const [loginError, setLoginError] = useState(""); //
+  const pathname = usePathname();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsInitializing(false);
-    });
-    return () => unsubscribe();
-  }, []); //
-
-  // 🕒 ENHANCEMENT 3: Proactive Keep-Alive Auth Token Refresher
-  useEffect(() => {
-    if (!user) return;
-
-    // Trigger token refresh every 45 minutes (45 * 60 * 1000 ms)
-    const intervalMs = 45 * 60 * 1000;
-    const interval = setInterval(async () => {
-      try {
-        console.log("Keep-alive: Proactively refreshing Firebase Auth ID Token...");
-        await user.getIdToken(true);
-        console.log("Keep-alive: Auth Token successfully refreshed.");
-      } catch (err) {
-        console.error("Keep-alive: Failed to refresh Auth Token:", err);
-      }
-    }, intervalMs);
-
-    return () => clearInterval(interval);
-  }, [user]);
-
-  const permissions = getPermissions(user?.email); //
-
-  // 🟢 ALIGN PRIVILEGES DIRECTLY WITH CORES SEGMENTATION MATRIX FROM SECURITY.TS
-  const isMasterAdmin = permissions.role === "PROGRAM_MANAGER";
-  const isPortfolioManager = permissions.role === "PORTFOLIO_MANAGER";
-  const isProjectManager = permissions.role === "PROJECT_MANAGER";
-  
-  // Group all field staff variations to synchronize access rules easily
-  const isAnyFieldStaff = [
-    "FIELD_ENGINEER", 
-    "IT_PHYSICAL_SECURITY", 
-    "NETWORK_ENGINEER"
-  ].includes(permissions.role);
-
-  // Granular Navigation Render Conditionals
-  const showPortfolioDashboard = isMasterAdmin || isPortfolioManager;
-  const showPmDashboard = true; 
-  const showProjectWorkbench = isMasterAdmin || isPortfolioManager || isProjectManager;
-  
-  // 🟢 SHIELD LOCKDOWN: If user is part of the field workforce tracks, drawings menu evaluates to false
-  const showDrawingsAndBulletins = !isAnyFieldStaff;
-  
-  const showFieldReportForm = true; 
-  const showAirfieldMap = isMasterAdmin || isPortfolioManager;
-  const showSapFinancials = isMasterAdmin || isPortfolioManager || isProjectManager;
-  const showAdminControlPortal = isMasterAdmin;
-
-  const handlePasswordLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      setLoginError("");
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-    } catch (err: any) {
-      console.error(err);
-      if (err.message.includes("invalid-credential")) {
-        setLoginError("Invalid email or password. Please verify your credentials.");
+    const auth = getAuth();
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser(user);
       } else {
-        setLoginError(`Sign-in failed: ${err.message}`);
+        setCurrentUser(null);
       }
-    }
-  }; //
-
-  const handleGoogleSignIn = async () => {
-  const provider = new GoogleAuthProvider();
-  try {
-    // This triggers a secure popup window directly through Google's servers
-    const result = await signInWithPopup(auth, provider);
-    console.log("Authenticated User:", result.user.email);
-  } catch (error) {
-    console.error("Google Authentication Failed:", error);
-  }
-};
+    });
+    return () => unsub();
+  }, []);
 
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-    } catch (err) {
-      console.error("Logout error", err);
-    }
-  }; //
+    const auth = getAuth();
+    await signOut(auth);
+    window.location.href = '/login';
+  };
 
-  if (isInitializing) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="text-sm font-medium text-slate-500 animate-pulse">Synchronizing AviaITrack Session...</div>
-      </div>
-    );
-  } //
+  const navItems = [
+    { name: 'Portfolio Overview', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'PM Workbench', href: '/dashboard/workbench', icon: Briefcase },
+    { name: 'Spatial Map', href: '/dashboard/map', icon: Map },
+    { name: 'Financial Ledger', href: '/dashboard/financials', icon: Layers },
+    { name: 'Documents & Design', href: '/dashboard/drawings', icon: FileText },
+    { name: 'Administrative Console', href: '/dashboard/admin', icon: Settings },
+  ];
 
-  if (!user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-        <form onSubmit={handlePasswordLogin} className="p-8 bg-white shadow-md border rounded-xl max-w-md w-full space-y-4">
-          <div className="text-center space-y-2">
-            <Plane className="h-8 w-8 text-[#142E88] mx-auto" />
-            <h2 className="text-xl font-bold text-[#142E88]">AviaITrack Control</h2>
-            <p className="text-xs text-muted-foreground">Sign in using your assigned project profile.</p>
+  const isActive = (path: string) => {
+    if (path === '/dashboard') return pathname === '/dashboard';
+    return pathname?.startsWith(path);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row">
+      {/* 📱 Mobile Navbar Header */}
+      <header className="flex md:hidden items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800">
+        <div className="flex items-center gap-2">
+          {/* Neutral Project Icon replacing old AviaITrack plane elements */}
+          <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
+            <Activity className="h-4 w-4 text-sky-400" />
           </div>
-          
-          {loginError && (
-            <p className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-200 break-words">
-              {loginError}
-            </p>
-          )}
+          <span className="font-bold text-md text-white tracking-wider uppercase">PMO Portal</span>
+        </div>
+        <button 
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          className="text-slate-400 hover:text-white transition-colors"
+        >
+          {mobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+        </button>
+      </header>
 
-          <div className="space-y-3">
-            <label className="block text-xs font-semibold text-slate-600">Email Address</label>
-            <input type="email" placeholder="user@mail.com" value={email} onChange={e => setEmail(e.target.value)} className="w-full rounded-md border p-2 text-sm bg-white" required />
-            
-            <label className="block text-xs font-semibold text-slate-600">Password</label>
-            <div className="relative flex items-center">
-              <input 
-                type={showPassword ? "text" : "password"} 
-                placeholder="••••••••" 
-                value={password} 
-                onChange={e => setPassword(e.target.value)} 
-                className="w-full rounded-md border p-2 pr-10 text-sm bg-white" 
-                required 
-              />
-              <button 
-                type="button" 
-                onClick={() => setShowPassword(!showPassword)} 
-                className="absolute right-3 text-slate-400 hover:text-slate-600 p-1"
+      {/* 🖥️ Desktop Left Navigation Sidebar */}
+      <aside className="hidden md:flex flex-col w-64 bg-slate-900 border-r border-slate-800 flex-shrink-0">
+        <div className="flex items-center gap-2 px-6 py-6 border-b border-slate-800">
+          {/* Fully Scrubbed branding matching your boss's criteria */}
+          <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
+            <Activity className="h-4 w-4 text-sky-400" />
+          </div>
+          <span className="font-extrabold text-lg text-white tracking-wider uppercase">PMO Portal</span>
+        </div>
+
+        <nav className="flex-1 py-6 px-4 space-y-1.5 overflow-y-auto">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
+                  active 
+                    ? 'bg-sky-500/15 text-sky-400 border-l-4 border-sky-500 pl-3' 
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                }`}
               >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                <Icon className={`h-4.5 w-4.5 ${active ? 'text-sky-400' : 'text-slate-400'}`} />
+                {item.name}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* User context footer block */}
+        <div className="p-4 border-t border-slate-800 bg-slate-900/50 flex flex-col gap-2">
+          {currentUser && (
+            <div className="flex items-center gap-2 px-2 py-1">
+              <div className="h-8 w-8 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
+                <User className="h-4 w-4 text-slate-300" />
+              </div>
+              <div className="truncate flex-1">
+                <p className="text-xs text-slate-400 font-medium truncate">{currentUser.email}</p>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign Out Session
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Drawer Overlay navigation logic */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex">
+          <div className="w-4/5 max-w-sm bg-slate-900 p-6 flex flex-col h-full border-r border-slate-800 animate-slide-in">
+            <div className="flex items-center justify-between pb-6 border-b border-slate-800 mb-6">
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
+                  <Activity className="h-4 w-4 text-sky-400" />
+                </div>
+                <span className="font-extrabold text-md text-white tracking-wider uppercase">PMO Portal</span>
+              </div>
+              <button onClick={() => setMobileMenuOpen(false)}>
+                <X className="h-6 w-6 text-slate-400 hover:text-white" />
+              </button>
+            </div>
+
+            <nav className="flex-1 space-y-1">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const active = isActive(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
+                      active 
+                        ? 'bg-sky-500/15 text-sky-400 border-l-4 border-sky-500 pl-3' 
+                        : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                    }`}
+                  >
+                    <Icon className="h-4.5 w-4.5" />
+                    {item.name}
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <div className="pt-6 border-t border-slate-800 flex flex-col gap-3">
+              {currentUser && (
+                <div className="flex items-center gap-2">
+                  <User className="h-4 w-4 text-slate-400" />
+                  <span className="text-xs text-slate-300 truncate">{currentUser.email}</span>
+                </div>
+              )}
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center gap-2 px-4 py-2.5 bg-rose-500/10 text-rose-400 rounded-lg text-xs font-semibold"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out Session
               </button>
             </div>
           </div>
-          
-          {/* Email / Password Submit Action */}
-          <Button type="submit" className="w-full bg-[#142E88] text-white py-2 font-medium">
-            Sign In with Password
-          </Button>
-
-          {/* 🔘 NEW: EXPLOIT GOOGLE SSO TO BYPASS THE FIREWALL */}
-          <div className="relative flex py-2 items-center">
-            <div className="flex-1 border-t border-slate-200"></div>
-            <span className="shrink-0 mx-4 text-[10px] text-slate-400 font-bold uppercase tracking-wider">Or Continue With</span>
-            <div className="flex-1 border-t border-slate-200"></div>
-          </div>
-
-          <Button 
-            type="button" 
-            onClick={() => initiateGoogleSignIn(auth)} 
-            className="w-full bg-white hover:bg-slate-50 text-slate-700 font-semibold py-2 border border-slate-300 rounded-md flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all"
-          >
-            {/* Standard inline SVG for clean Google branding */}
-            <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24">
-              <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.11C18.28 1.845 15.448 1 12.24 1 5.48 1 0 6.48 0 13.2s5.48 12.2 12.24 12.2c7.055 0 11.75-4.96 11.75-11.96 0-.81-.087-1.425-.195-1.955H12.24z"/>
-            </svg>
-            Sign in with COSA Email
-          </Button>
-        </form>
-      
-      </div>
-    );
-  } //
-
-  return (
-    <div className="grid min-h-screen w-full md:grid-cols-[260px_1fr]">
-      <aside className="hidden border-r bg-slate-900 text-slate-200 md:block relative">
-        <div className="flex h-14 items-center border-b border-slate-800 px-6">
-          <div className="flex items-center gap-2 font-semibold">
-            <Plane className="h-5 w-5 text-[#1EA7F4]" />
-            <span className="text-base font-bold">AviaITrack</span>
-          </div>
+          <div className="flex-1" onClick={() => setMobileMenuOpen(false)} />
         </div>
+      )}
 
-        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40 flex items-center justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-slate-400 font-medium">{permissions.title}</p>
-            <p className="text-sm text-white font-semibold truncate">{user.email}</p>
-          </div>
-          <div className="shrink-0">
-            <GlobalHeaderNotificationHub />
-          </div>
-        </div>
-
-        <nav className="p-4 space-y-1 text-sm">
-          {showPortfolioDashboard && (
-            <Link href="/dashboard/executive" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <PieChart className="h-4 w-4" /> Portfolio Dashboard
-            </Link>
-          )}
-  
-          {showPmDashboard && (
-            <Link href="/dashboard" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <LayoutDashboard className="h-4 w-4" /> PM Dashboard
-            </Link>
-          )}
-
-          {/* --- EXISTING PROJECT WORKBENCH --- */}
-          {showProjectWorkbench && (
-            <Link href="/dashboard/workbench" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <HardHat className="h-4 w-4 text-[#1EA7F4]" /> Project Workbench
-            </Link>
-          )}
-
-          {/* 🪲 TEMPORARY DEBUG READOUT */}
-        <div className="text-[10px] text-amber-400 p-2 bg-slate-900 rounded mb-2">
-          Flag: {showProjectWorkbench ? "ON" : "OFF"} | Role: "{userRole || "NOT FOUND"}"
-        </div>
-
-          {/* 🔐 ROLE SECURED: Only visible if the project workbench feature flag is on AND user has matching management clearance */}
-          {showProjectWorkbench && userRole && ["PORTFOLIO_MANAGER", "PROGRAM_MANAGER", "PROJECT_MANAGER"].includes(userRole) && (
-            <Link href="/dashboard/workbench/cluster" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <svg className="h-4 w-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-              </svg> 
-              Workbench Risk Cluster
-            </Link>
-          )}
-
-
-          {showDrawingsAndBulletins && (
-            <Link href="/dashboard/drawings" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <Library className="h-4 w-4 text-[#1EA7F4]" /> Drawings & Bulletins
-            </Link>
-          )}
-
-          {showFieldReportForm && (
-            <Link href="/field" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <FileText className="h-4 w-4" /> Field Report Form
-            </Link>
-          )}
-
-          {showAirfieldMap && (
-            <Link href="/dashboard/map" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <Network className="h-4 w-4 text-[#1EA7F4]" /> Airfield Overlay Map
-            </Link>
-          )}
-
-          {showSapFinancials && (
-            <Link href="/dashboard/financials" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <FileSpreadsheet className="h-4 w-4" /> SAP / Financial Tracking
-            </Link>
-          )}
-
-          {showAdminControlPortal && (
-            <Link href="/dashboard/admin" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors">
-              <ShieldCheck className="h-4 w-4 text-emerald-500" /> Admin Control Portal
-            </Link>
-          )}
-        </nav>
-
-        <div className="absolute bottom-4 left-4 right-4">
-          <Button onClick={handleLogout} variant="ghost" className="w-full justify-start gap-2 text-slate-400 hover:text-white hover:bg-slate-800 text-xs">
-            <LogOut className="h-3.5 w-3.5" /> Sign Out
-          </Button>
-        </div>
-      </aside>
-      
-      <main className="flex-1 p-6 bg-slate-50 overflow-y-auto">
+      {/* Main workspace routing target */}
+      <main className="flex-1 flex flex-col min-w-0 bg-slate-950 overflow-x-hidden">
         {children}
       </main>
     </div>
