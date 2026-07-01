@@ -12,7 +12,7 @@ export async function POST() {
     const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
     const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-      ? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n')
+      ? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n') // 💡 Change this to catch double-escaped backslashes!
       : undefined;
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
