@@ -13,9 +13,8 @@ export async function POST() {
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
     
     // 🔐 Clean private key of any hidden enclosing string formatting from environments
-    const rawPrivateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
-    const privateKey = rawPrivateKey
-      ? rawPrivateKey.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, '\n')
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY 
+      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 
       : undefined;
 
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
