@@ -1,9 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  reactStrictMode: true,
+
+  // Preserves your build configuration preferences safely
   typescript: {
-    // Preserves your build configuration preferences safely
     ignoreBuildErrors: true,
   },
+
+  // Configures remote image assets support
   images: {
     remotePatterns: [
       {

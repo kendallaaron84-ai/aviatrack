@@ -11,9 +11,13 @@ export async function POST() {
   try {
     const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-      ? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n') // 💡 Change this to catch double-escaped backslashes!
+    
+    // 🔐 BULLETPROOF KEY SANITIZATION: Removes ghost edge-case quotes and forces newline evaluation
+    const rawPrivateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+    const privateKey = rawPrivateKey
+      ? rawPrivateKey.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, '\n')
       : undefined;
+
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
     // Handle empty environments / missing configurations gracefully
@@ -140,69 +144,5 @@ export async function POST() {
     // Clean up potential markdown formatting block backticks around AI JSON responses before parsing safely
     jsonText = jsonText.trim();
     if (jsonText.startsWith("```")) {
-      jsonText = jsonText.replace(/^```(?:json)?\s*/i, "");
-      jsonText = jsonText.replace(/\s*```$/, "");
-    }
-    jsonText = jsonText.trim();
-
-    const { items } = JSON.parse(jsonText);
-
-    const batch = adminDb.batch();
-    
-    for (const item of items) {
-      const raidRef = adminDb.collection("raid_matrix").doc();
-      const assignedOwner = item.classification === "Dependency" || item.classification === "Issue" 
-        ? "IT Consultant" 
-        : "ORAT Team";
-
-      const rawProb = parseInt(item.probability);
-      const parsedProbability = isNaN(rawProb) ? 2 : Math.max(1, Math.min(4, rawProb));
-      const importanceVal = item.importance || "Medium";
-
-      const title = item.title || "";
-      const description = item.description || "";
-      const classification = item.classification || "Risk";
-      const roamCategory = item.roamCategory || classification || "New / Unassigned";
-      const projectId = item.projectId || "Global";
-      const status = "Identified";
-
-      const textPool = [title, description, classification, roamCategory, status, projectId].join(" ").toLowerCase();
-      const search_tags = Array.from(new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
-
-      batch.set(raidRef, {
-        sourceReferenceId: item.sourceReferenceId || "",
-        projectId,
-        sourceType: item.sourceType || "Field Observation",
-        title,
-        description,
-        classification,
-        roamCategory,
-        importance: importanceVal,
-        impactLevel: importanceVal, // populate both keys for cross-layout support
-        probability: parsedProbability,
-        status,
-        assignedOwner,
-        isItOwned: assignedOwner === "IT Consultant",
-        dispositionNotes: "",
-        historicalComments: [],
-        sourceContextLink: item.sourceType === "Project Journal" 
-          ? "PM Daily Log / Workbench Tracker" 
-          : "Div 27 / Cable Pathways Submittal", 
-        analyzedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        search_tags
-      });
-    }
-    
-    await batch.commit();
-
-    return NextResponse.json({ 
-      success: true, 
-      processedCount: items ? items.length : 0 
-    });
-
-  } catch (error: any) {
-    console.error("RAID Pipeline Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-}
+      jsonText = jsonText.replace(/^
+http://googleusercontent.com/immersive_entry_chip/0
