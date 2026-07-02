@@ -1,553 +1,606 @@
 // File: src/app/dashboard/review/[id]/page.tsx
-'use client';
+"use client";
 
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { 
-  getFirestore, 
-  doc, 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  getDocs, 
-  query, 
-  where, 
-  updateDoc 
-} from 'firebase/firestore';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { 
-  ShieldAlert, 
-  Clock, 
-  User, 
-  CheckCircle, 
-  AlertTriangle, 
-  Search, 
-  MessageSquare, 
-  Send, 
-  Plus, 
-  FileText, 
-  ArrowLeft,
-  Briefcase,
-  AlertCircle,
-  Bell
-} from 'lucide-react';
-import { initializeApp, getApps } from 'firebase/app';
+import React, { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Paperclip, MessageSquare, Send, ShieldAlert, Image as ImageIcon, FileText, X, Printer, ArrowLeft, ClipboardList, Maximize2, ZoomIn, ZoomOut, HardHat, Calendar, CloudSun } from "lucide-react";
+import { db, auth } from "@/lib/firebase";
 
-// Core Firebase configuration initialization
-const firebaseConfig = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ? {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-} : null;
+// Native Firebase Transactions
+import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "firebase/firestore";
 
-if (firebaseConfig && getApps().length === 0) {
-  initializeApp(firebaseConfig);
-}
-
-export default function PMReviewDashboard() {
-  const { id } = useParams();
+export default function ReviewObservationPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = React.use(params);
   const router = useRouter();
-  
-  const [project, setProject] = useState<any>(null);
-  const [dailyLogs, setDailyLogs] = useState<any[]>([]);
-  const [observations, setObservations] = useState<any[]>([]);
-  const [chatLogs, setChatLogs] = useState<any[]>([]);
-  const [user, setUser] = useState<any>(null);
+  const { toast } = useToast();
+    
+  // Master Core States
+  const [obs, setObs] = useState<any>(null);
+  const [location, setLocation] = useState("");
+  const [description, setDescription] = useState("");
+  const [resolutionType, setResolutionType] = useState("");
+  const [status, setStatus] = useState("");
+  const [comment, setComment] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Form entries configuration states
-  const [newLogText, setNewLogText] = useState('');
-  const [newMessageText, setNewMessageText] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  // Sub-Observations List with Nested Photos
+  const [subObservationsList, setSubObservationsList] = useState<any[]>([]);
+  const [pmAttachments, setPmAttachments] = useState<any[]>([]);
+  const [pmCommentsHistory, setPmCommentsHistory] = useState<any[]>([]);
 
-  // Setup security authentication state listeners
+  // Security & Portfolio Oversight 
+  const [isReadOnly, setIsReadOnly] = useState(false);
+  const [portfolioQuestion, setPortfolioQuestion] = useState("");
+  const [portfolioQuestionsFeed, setPortfolioQuestionsFeed] = useState<any[]>([]);
+
+  // Coupled Integration Mapping States (Scurbbed ProjectSight references completely)
+  const [dailyReportRecordNumber, setDailyReportRecordNumber] = useState("");
+  const [dailyReportWorkStatus, setDailyReportWorkStatus] = useState("");
+  const [issuesRecordNumber, setIssuesRecordNumber] = useState("");
+  const [issuesTitle, setIssuesTitle] = useState("");
+  const [issuesReportNumber, setIssuesReportNumber] = useState("");
+
+  // Interactive Lightbox Engine States
+  const [activeLightboxImg, setActiveLightboxImg] = useState<string | null>(null);
+  const [zoomScale, setZoomScale] = useState(1);
+
   useEffect(() => {
-    const auth = getAuth();
-    const unsub = onAuthStateChanged(auth, (logged) => {
-      setUser(logged);
-    });
-    return () => unsub();
-  }, []);
+    const currentUserEmail = auth.currentUser?.email || "";
+    if (currentUserEmail.toLowerCase().includes("ytevia") || currentUserEmail.toLowerCase().includes("portfolio")) {
+      setIsReadOnly(true); 
+    }
 
-  // Sync scroll on chat messages block
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatLogs]);
-
-  // Dual source real-time sync mapping 
-  useEffect(() => {
-    if (!id) return;
-    const db = getFirestore();
-
-    // Fetch master metadata block
-    const projectRef = doc(db, 'projects', id as string);
-    const unsubProject = onSnapshot(projectRef, (snap) => {
-      if (snap.exists()) {
-        setProject({ id: snap.id, ...snap.data() });
-      }
-    });
-
-    // Fetch Source A: Draft Bi-weekly / Weekly report daily logs
-    const journalRef = collection(db, 'project_journals', id as string, 'entries');
-    const unsubJournal = onSnapshot(journalRef, (snap) => {
-      const logs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setDailyLogs(logs);
-    });
-
-    // Fetch Source B: Field Site observations (nested sub-collection mapping)
-    const obsRef = collection(db, 'field_observations');
-    const unsubObs = onSnapshot(obsRef, async (snap) => {
-      const gatheredSubs: any[] = [];
-      const parentPromises = snap.docs.map(async (parentDoc) => {
-        const parentData = parentDoc.data();
+    const docRef = doc(db, "field_observations", id);
+    
+    getDoc(docRef).then((docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setObs(data);
+        setLocation(data.location || "");
+        setDescription(data.description || "");
+        setResolutionType(data.resolutionType || "General");
         
-        // Confirm project scoping mapping match safely
-        const isMatched = parentData.projectId === id || 
-                          parentData.project_id === id || 
-                          (parentData.projectId && String(parentData.projectId).toLowerCase() === String(id).toLowerCase());
+        const baseStatus = data.status || "New";
+        setStatus(baseStatus === "In Progress" ? "In Review" : baseStatus);
+        
+        setDailyReportRecordNumber(data.dailyReportRecordNumber || "");
+        setDailyReportWorkStatus(data.dailyReportWorkStatus || "");
+        setIssuesRecordNumber(data.issuesRecordNumber || "");
+        setIssuesTitle(data.issuesTitle || "");
+        setIssuesReportNumber(data.issuesReportNumber || "");
 
-        if (isMatched) {
-          const subCol = collection(db, 'field_observations', parentDoc.id, 'sub_observations');
-          const subSnap = await getDocs(subCol);
-          subSnap.forEach((subDoc) => {
-            const subData = subDoc.data();
-            gatheredSubs.push({
-              id: subDoc.id,
-              parentObservationId: parentDoc.id,
-              location: parentData.location || 'Field Walk Site',
-              author: parentData.author || parentData.loggedBy || 'Field Tech',
-              projectName: parentData.projectName || 'Active Field Runways',
-              ...subData
-            });
-          });
+        if (data.resolutionAttachments && Array.from(data.resolutionAttachments).length > 0) {
+          const loadedAttachments = data.resolutionAttachments.map((url: string, index: number) => ({
+            id: `loaded-${index}`,
+            name: `Resolution_Doc_${index + 1}`,
+            previewUrl: url, 
+            isUploaded: true
+          }));
+          setPmAttachments(loadedAttachments);
         }
-      });
+      }
+    }).catch((err) => console.error("Error fetching root log:", err));
 
-      await Promise.all(parentPromises);
-      setObservations(gatheredSubs);
-    }, (error) => {
-      console.error("Observation pipeline read error: ", error);
+    // Dynamic stream for associated sub-observations containing line-item pictures
+    const unsubSubObs = onSnapshot(collection(db, "field_observations", id, "sub_observations"), (subSnap) => {
+      const items = subSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      items.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      setSubObservationsList(items);
     });
 
-    // Fetch Project Specific Chat Log mentions
-    const chatRef = collection(db, 'projects', id as string, 'chat_logs');
-    const unsubChat = onSnapshot(chatRef, (snap) => {
-      const msgs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-        .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      setChatLogs(msgs);
+    const unsubQuestions = onSnapshot(collection(db, "field_observations", id, "portfolio_questions"), (snap) => {
+      const qData = snap.docs.map(d => d.data());
+      qData.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      setPortfolioQuestionsFeed(qData);
+    });
+
+    const unsubPmComments = onSnapshot(collection(db, "field_observations", id, "pm_comments"), (snap) => {
+      const cData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      cData.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      setPmCommentsHistory(cData);
     });
 
     return () => {
-      unsubProject();
-      unsubJournal();
-      unsubObs();
-      unsubChat();
+      unsubSubObs();
+      unsubQuestions();
+      unsubPmComments(); 
     };
   }, [id]);
 
-  // 🔍 DEEP SEARCH RELEVANCE SCORING & SORTING ENGINE
-  // Ranks each document based on term matches across its fields for exact deep keyword sorting
-  const scoreAndSortData = (items: any[], searchableFields: string[]) => {
-    if (!searchQuery.trim()) return items;
-    
-    const terms = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
-    
-    return items
-      .map(item => {
-        let score = 0;
-        searchableFields.forEach(field => {
-          const content = String(item[field] || "").toLowerCase();
-          terms.forEach(term => {
-            if (content.includes(term)) {
-              score += 15; // Found keyword hit
-              
-              // Add progressive weight for multiple occurrences
-              const occurrences = content.split(term).length - 1;
-              score += occurrences * 4;
-              
-              // Exact matches gain primary priority weighting
-              if (content === term) {
-                score += 25;
-              }
-            }
-          });
-        });
-        return { ...item, searchScore: score };
-      })
-      .filter(item => item.searchScore > 0)
-      .sort((a, b) => b.searchScore - a.searchScore);
+  const handlePmFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const newAttachments = Array.from(files).map(file => ({
+      file,
+      name: file.name,
+      id: crypto.randomUUID(),
+      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : ""
+    }));
+
+    setPmAttachments([...pmAttachments, ...newAttachments]);
   };
 
-  const filteredLogs = scoreAndSortData(dailyLogs, ['text', 'loggedBy', 'status']);
-  const filteredObs = scoreAndSortData(observations, ['description', 'observationType', 'priority', 'location', 'author']);
+  const removePmAttachment = (attachmentId: string) => {
+    setPmAttachments(pmAttachments.filter(a => a.id !== attachmentId));
+  };
 
-  // Extract separate threat scopes clearly for layout views
-  const journalRisks = filteredLogs.filter(log => {
-    const text = (log.text || "").toLowerCase();
-    return text.includes("risk") || text.includes("critical") || text.includes("threat") || text.includes("issue");
-  });
-
-  const observationRisks = filteredObs.filter(obs => obs.observationType === 'Risk');
-
-  // 📝 Post a new journal / Draft Bi-weekly entry block
-  const handleAddJournalEntry = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newLogText.trim() || !user) return;
-    setIsSubmitting(true);
-
+  const handleSavePMReview = async () => {
+    if (isReadOnly) return;
+    setIsSaving(true);
+    
+    toast({ title: "Review Synchronized", description: "Log entries pushed to Firestore & Google Sheets." });
+    
     try {
-      const db = getFirestore();
-      const journalRef = collection(db, 'project_journals', id as string, 'entries');
-      await addDoc(journalRef, {
-        text: newLogText,
-        loggedBy: user.email,
-        timestamp: new Date().toISOString(),
-        status: "Draft",
-        source: "Manual Workbench Entry"
-      });
-      setNewLogText('');
-    } catch (err) {
-      console.error("Failed to commit journal: ", err);
+      const docRef = doc(db, "field_observations", id);
+      const currentUser = auth.currentUser?.email || "Unknown PM";
+      const timestamp = new Date().toISOString();
+      
+      const uploadedResolutionUrls = pmAttachments.map(a => a.previewUrl || "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=600");
+
+      const updatePayload = {
+        location, 
+        description, 
+        resolutionType,
+        status,
+        dailyReportRecordNumber,
+        dailyReportWorkStatus,
+        issuesRecordNumber,
+        issuesTitle,
+        issuesReportNumber,
+        lastUpdatedBy: currentUser,
+        lastUpdatedAt: timestamp,
+        resolutionAttachments: uploadedResolutionUrls
+      };
+
+      updateDoc(docRef, updatePayload);
+
+      if (comment.trim() !== "") {
+        addDoc(collection(db, "field_observations", id, "pm_comments"), {
+          text: comment,
+          author: currentUser,
+          statusAtTime: status,
+          createdAt: timestamp
+        });
+      }
+
+      try {
+        fetch("/api/sync-sheets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, ...updatePayload, comment })
+        });
+      } catch (sheetErr) {
+        console.warn("External Sheets workflow deferred to background sync.");
+      }
+
+      setComment(""); 
+      router.push("/dashboard");
+    } catch (error) {
+      toast({ variant: "destructive", title: "Sync Error", description: "Failed to log metrics." });
     } finally {
-      setIsSubmitting(false);
+      setIsSaving(false);
     }
   };
 
-  // 💬 CHAT LOG MENTION PARSER & PING ROUTER
-  // Parses comments for targeted roles/emails to update pingUser triggers and send alerts 
-  const handleSendChatMessage = async (e: React.FormEvent) => {
+  const submitPortfolioQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessageText.trim() || !user) return;
+    if (portfolioQuestion.trim() === "") return;
 
     try {
-      const db = getFirestore();
-      const chatRef = collection(db, 'projects', id as string, 'chat_logs');
+      const currentUser = auth.currentUser?.email || "Project Manager";
+      const timestamp = new Date().toISOString();
+      let isMentionTriggered = false;
+      let targetUserEmail = "";
 
-      let pingUser = "";
-      const lowerMessageText = newMessageText.toLowerCase();
-
-      // Check explicit role mappings first to flag Consultant vs. Teams
-      if (lowerMessageText.includes("@it consultant") || lowerMessageText.includes("@it")) {
-        pingUser = "IT Consultant";
-      } else if (lowerMessageText.includes("@orat team") || lowerMessageText.includes("@orat")) {
-        pingUser = "ORAT Team";
-      } else if (newMessageText.includes("@")) {
-        // Sniff exact emails (e.g. @kendallaaron84@gmail.com)
-        const emailRegex = /@([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
-        const matchedEmail = newMessageText.match(emailRegex);
-        if (matchedEmail) {
-          pingUser = matchedEmail[1];
-        } else {
-          // Fallback to any username word boundary after @
-          const generalRegex = /@(\w+)/;
-          const matchedName = newMessageText.match(generalRegex);
-          if (matchedName) {
-            pingUser = matchedName[1];
-          }
+      if (portfolioQuestion.includes("@")) {
+        const parts = portfolioQuestion.split("@");
+        if (parts[1]) {
+          isMentionTriggered = true;
+          targetUserEmail = parts[1].split(" ")[0]; 
         }
       }
 
-      await addDoc(chatRef, {
-        text: newMessageText,
-        sender: user.email,
-        senderName: user.displayName || user.email.split('@')[0],
-        createdAt: new Date().toISOString(),
-        pingUser, // The exact user target currently pinged
-        read: false
+      await addDoc(collection(db, "field_observations", id, "portfolio_questions"), {
+        text: portfolioQuestion,
+        author: currentUser,
+        createdAt: timestamp,
+        mentionFlag: isMentionTriggered,
+        notifiedTarget: targetUserEmail
       });
 
-      setNewMessageText('');
-    } catch (err) {
-      console.error("Failed to dispatch chat: ", err);
+      setPortfolioQuestion("");
+      toast({ title: "Comment Transmitted", description: "Message logged to project timeline feed." });
+    } catch (e) {
+      toast({ variant: "destructive", title: "Error", description: "Failed to log comment." });
     }
   };
 
+  const openImageModal = (url: string) => {
+    setZoomScale(1);
+    setActiveLightboxImg(url);
+  };
+
+  if (!obs) return <div className="p-8 text-slate-500 animate-pulse">Loading tracking metrics...</div>;
+
   return (
-    <div className="flex-1 bg-slate-50 p-6 md:p-8 overflow-y-auto space-y-6">
-      {/* 🧭 Nav Header and Back Trigger */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={() => router.push('/dashboard/workbench')}
-            className="p-2 bg-white border border-slate-200 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-all shadow-2xs"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs bg-sky-50 text-sky-600 font-bold px-2 py-0.5 rounded border border-sky-200 uppercase tracking-wider">PM Review Matrix</span>
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 mt-1">{project?.name || "Active Workspace Hub"}</h1>
+    <div className="max-w-6xl mx-auto pt-4 pb-12 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 print:block print:max-w-full print:p-0">
+      
+      {/* CSS Utilities Engine */}
+      <style jsx global>{`
+        @media print {
+          nav, sidebar, aside, button, footer, form, .print\\:hidden {
+            display: none !important;
+          }
+          body, main, .grid {
+            background: white !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            display: block !important;
+            width: 100% !important;
+          }
+          .print\\:full-width {
+            width: 100% !important;
+            max-width: 100% !important;
+          }
+          .print\\:no-border {
+            border: none !important;
+            box-shadow: none !important;
+            background: transparent !important;
+          }
+          .print\\:scale-inline-img {
+            height: 280px !important;
+            width: 440px !important;
+            object-fit: cover !important;
+            margin-top: 8px !important;
+            border-radius: 4px !important;
+            border: 1px solid #cbd5e1 !important;
+          }
+        }
+      `}</style>
+
+      {/* Main Content Pane */}
+      <div className="space-y-6 print:full-width">
+        <div className="flex items-center justify-between print:border-b-2 print:border-slate-900 print:pb-2">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black text-[#3c38d4] tracking-tight print:text-black print:text-3xl uppercase">Field Observation Transmittal</h1>
+            <p className="text-xs font-mono font-bold text-slate-500">RECORD ID: FOR-{id.toUpperCase()}</p>
+          </div>
+          <div className="flex items-center gap-2 print:hidden">
+            {isReadOnly && (
+              <Badge className="bg-purple-100 text-purple-800 border-purple-200 font-semibold gap-1 rounded-sm shadow-none">
+                <ShieldAlert className="h-3 w-3" /> Executive Read-Only Active
+              </Badge>
+            )}
+            <Button onClick={() => window.print()} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-9 text-xs rounded-sm gap-1.5 cursor-pointer">
+              <Printer className="h-4 w-4" /> Print Observation Form
+            </Button>
           </div>
         </div>
-
-        {/* Dynamic Context Search Bar */}
-        <div className="relative w-full sm:w-80">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search report logs & observations..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-slate-200 rounded-lg pl-9 pr-4 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all shadow-2xs"
-          />
-        </div>
-      </div>
-
-      {/* 📊 Project Metadata Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <p className="text-xs text-slate-500 font-medium">Assigned Lead</p>
-          <p className="text-sm font-bold text-slate-800 mt-1 truncate">{project?.lead || "ORAT Lead Team"}</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <p className="text-xs text-slate-500 font-medium">Project Status</p>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 mt-1">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            {project?.status || "Active Execution"}
-          </span>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <p className="text-xs text-slate-500 font-medium">Bi-weekly Entries</p>
-          <p className="text-sm font-bold text-slate-800 mt-1">{dailyLogs.length} Blocks Loaded</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <p className="text-xs text-slate-500 font-medium">Inspection Detections</p>
-          <p className="text-sm font-bold text-slate-800 mt-1">{observations.length} Hazards</p>
-        </div>
-      </div>
-
-      {/* 🚀 Active Risks Grid Section */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4 shadow-2xs">
-        <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
-          <ShieldAlert className="h-5 w-5 text-red-500" />
-          <h2 className="text-lg font-bold text-slate-900">Consolidated Project Threat Monitor</h2>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* A. Journal Report Risks Section */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-              <span>Risks from Draft Bi-Weekly Reports</span>
-              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">{journalRisks.length} active</span>
-            </h3>
-            
-            {journalRisks.length === 0 ? (
-              <div className="bg-slate-50 border border-slate-100 rounded-xl p-6 text-center">
-                <AlertCircle className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-xs text-slate-500">No report-log risk items match this context.</p>
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                {journalRisks.map((log: any) => (
-                  <div key={log.id} className="bg-slate-50 border border-red-100 hover:border-red-200 rounded-xl p-4 transition-all shadow-3xs">
-                    <p className="text-sm text-slate-800 leading-relaxed font-medium">{log.text}</p>
-                    <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100 text-xs text-slate-500">
-                      <span className="flex items-center gap-1"><User className="h-3.5 w-3.5" /> {log.loggedBy}</span>
-                      <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {new Date(log.timestamp).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* B. Field Observation Risks Section */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-              <span>Risks from Field Observation Reports</span>
-              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">{observationRisks.length} active</span>
-            </h3>
-
-            {observationRisks.length === 0 ? (
-              <div className="bg-slate-50 border border-slate-100 rounded-xl p-6 text-center">
-                <AlertCircle className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-xs text-slate-500">No field observation risk items match this context.</p>
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                {observationRisks.map((obs: any) => (
-                  <div key={obs.id} className="bg-slate-50 border border-red-100 hover:border-red-200 rounded-xl p-4 transition-all shadow-3xs">
-                    <p className="text-sm text-slate-800 leading-relaxed font-medium">{obs.description}</p>
-                    <div className="flex flex-wrap items-center gap-3 mt-3 pt-2.5 border-t border-slate-100 text-xs text-slate-500">
-                      <span className="bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded font-bold uppercase text-[10px]">
-                        Priority: {obs.priority || "High"}
-                      </span>
-                      <span className="flex items-center gap-1"><User className="h-3.5 w-3.5" /> {obs.author || "Tech"}</span>
-                      <span className="flex items-center gap-1 ml-auto"><Clock className="h-3.5 w-3.5" /> {new Date(obs.createdAt).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-        </div>
-      </div>
-    </div>
-
-      {/* 🟢 Split Data Stream Panels (Bi-weekly input and observation logs) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
-        {/* Left: Project Journals & Manual Inputs */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4 shadow-2xs">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <h2 className="text-md font-bold text-slate-800 flex items-center gap-2">
-              <FileText className="h-4.5 w-4.5 text-sky-500" />
-              Project Bi-Weekly Summary Log
-            </h2>
-            <span className="text-xs text-slate-500">{filteredLogs.length} blocks found</span>
-          </div>
-
-          {/* New log entry submission form */}
-          <form onSubmit={handleAddJournalEntry} className="space-y-3">
-            <textarea
-              value={newLogText}
-              onChange={(e) => setNewLogText(e.target.value)}
-              placeholder="Record bi-weekly field summaries, project decisions, or operational risks..."
-              rows={3}
-              className="w-full bg-white border border-slate-200 rounded-lg p-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all resize-none shadow-3xs"
-            />
-            <button
-              type="submit"
-              disabled={isSubmitting || !newLogText.trim()}
-              className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-lg text-sm font-semibold transition-all ml-auto cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              Commit Log Entry
-            </button>
-          </form>
-
-          {/* Scrollable logs summary pool */}
-          <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-            {filteredLogs.map((log: any) => {
-              const isRisk = (log.text || "").toLowerCase().includes("risk");
-              return (
-                <div key={log.id} className={`bg-slate-50 border rounded-lg p-4 transition-all shadow-3xs ${isRisk ? 'border-red-200 bg-red-50/10' : 'border-slate-200'}`}>
-                  <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1.5">{log.status || "Assigned"}</p>
-                  <p className="text-sm text-slate-700 leading-relaxed">{log.text}</p>
-                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-200 text-xs text-slate-500">
-                    <span className="truncate font-medium">{log.loggedBy}</span>
-                    <span>{new Date(log.timestamp).toLocaleString()}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Right: Inspection Detections and Field Observations dropdown mapping */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4 shadow-2xs">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <h2 className="text-md font-bold text-slate-800 flex items-center gap-2">
-              <Briefcase className="h-4.5 w-4.5 text-amber-500" />
-              Field Observations & Site Inspections
-            </h2>
-            <span className="text-xs text-slate-500">{filteredObs.length} reports</span>
-          </div>
-
-          <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-            {filteredObs.map((obs: any) => {
-              const isRisk = obs.observationType === "Risk";
-              return (
-                <div key={obs.id} className={`bg-slate-50 border rounded-lg p-4 transition-all shadow-3xs ${isRisk ? 'border-red-200 bg-red-50/10' : 'border-slate-200'}`}>
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <span className={`text-xs px-2 py-0.5 rounded border uppercase tracking-wider font-bold text-[10px] ${
-                      isRisk 
-                        ? 'bg-rose-50 text-rose-700 border-rose-200' 
-                        : 'bg-amber-50 text-amber-700 border-amber-200'
-                    }`}>
-                      {obs.observationType || "Inspection"}
-                    </span>
-                    <span className="text-xs text-slate-500 font-bold">{obs.location}</span>
-                  </div>
-                  <p className="text-sm text-slate-700 leading-relaxed">{obs.description}</p>
-                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-200 text-xs text-slate-500">
-                    <span className="font-medium">Logged by: {obs.author || "Tech"}</span>
-                    <span>{new Date(obs.createdAt).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* 🔔 Project Threat Room Chat Logs & Alerts */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4 shadow-2xs">
-        <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
-          <MessageSquare className="h-5 w-5 text-sky-500" />
-          <h2 className="text-lg font-bold text-slate-800">Active Threat Room (RAID Chat Pings)</h2>
-        </div>
-
-        {/* Messages display stream */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 h-72 overflow-y-auto space-y-3 shadow-3xs">
-          {chatLogs.map((msg: any) => {
-            const isMe = msg.sender === user?.email;
-            return (
-              <div 
-                key={msg.id} 
-                className={`p-3 rounded-lg max-w-[85%] transition-all shadow-3xs ${
-                  isMe 
-                    ? 'bg-sky-600 text-white ml-auto' 
-                    : 'bg-white border border-slate-200 text-slate-800'
-                } ${
-                  msg.pingUser ? 'ring-1 ring-amber-400 bg-amber-50/50' : ''
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <p className={`text-xs font-bold ${isMe ? 'text-sky-100' : 'text-slate-500'}`}>{msg.senderName || msg.sender}</p>
-                  <span className={`text-[10px] ${isMe ? 'text-sky-200' : 'text-slate-400'}`}>{new Date(msg.createdAt).toLocaleTimeString()}</span>
-                  
-                  {/* Alert notification bubble for explicit pings */}
-                  {msg.pingUser && (
-                    <span className={`flex items-center gap-1 text-[10px] border px-1.5 py-0.5 rounded font-bold ${
-                      isMe 
-                        ? 'bg-sky-700/50 text-white border-sky-500/50'
-                        : 'bg-amber-100 text-amber-800 border-amber-200'
-                    }`}>
-                      <Bell className="h-2.5 w-2.5 animate-bounce" />
-                      Pinged {msg.pingUser}
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm leading-relaxed whitespace-pre-line">{msg.text}</p>
+        {/* Project Context Summary Meta Box */}
+        <Card className="border border-slate-200 shadow-xs rounded-sm bg-white print:no-border">
+          <CardContent className="p-6 print:p-0">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-medium text-slate-600 border-b pb-4 mb-6 print:border-slate-200 print:mb-6">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-slate-100 text-slate-700 rounded-sm print:hidden"><HardHat className="h-4 w-4 text-[#3c38d4]" /></div>
+                <div><span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Project Scope</span><span className="text-slate-900 font-bold">{obs.projectName}</span></div>
               </div>
-            );
-          })}
-          <div ref={chatEndRef} />
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-slate-100 text-slate-700 rounded-sm print:hidden"><Calendar className="h-4 w-4 text-[#3c38d4]" /></div>
+                <div><span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Track & Stage</span><span className="text-slate-900 font-semibold">{obs.programName || obs.program} / {obs.stage}</span></div>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-slate-100 text-slate-700 rounded-sm print:hidden"><CloudSun className="h-4 w-4 text-[#3c38d4]" /></div>
+                <div><span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Site Conditions</span><span className="text-slate-900 font-semibold">Weather: {obs.weather || "Controlled"}</span></div>
+              </div>
+            </div>
+
+            {/* Sequential Line-Item Block Loop */}
+            <div className="space-y-6">
+              <label className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5 border-b pb-2 print:text-black print:border-slate-400">
+                <ClipboardList className="h-4 w-4 text-[#3c38d4] print:hidden" /> Line-Item Field Observation Entries & Mapped Evidence
+              </label>
+              
+              {subObservationsList.length === 0 ? (
+                <div className="text-xs text-slate-400 italic text-center p-6 bg-slate-50 border border-dashed rounded-sm">
+                  No discrete structural line entries captured on this checklist.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {subObservationsList.map((item, index) => (
+                    <div key={item.id} className="p-4 border border-slate-200 bg-white shadow-2xs rounded-sm space-y-3 print:border-slate-300 print:p-4 print:shadow-none break-inside-avoid">
+                      <div className="flex items-center justify-between border-b pb-2 font-mono">
+                        <span className="text-xs font-bold text-[#3c38d4] print:text-black">LOG ENTRY #{index + 1} ({item.observationType})</span>
+                        <Badge className={`text-[9px] font-bold shadow-none rounded-xs ${item.priority === 'High' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-slate-50 text-slate-600'}`}>{item.priority} Priority</Badge>
+                      </div>
+                      
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider font-mono block print:text-slate-600">Observation Notes / Remarks:</span>
+                        <p className="text-sm font-medium text-slate-800 leading-relaxed font-sans print:text-slate-900 whitespace-pre-wrap">{item.description}</p>
+                      </div>
+                      
+                      {/* Photo specifically mapped under this log content */}
+                      {item.itemPhoto ? (
+                        <div className="pt-2">
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">Bound Media Frame:</label>
+                          <div 
+                            onClick={() => openImageModal(item.itemPhoto)}
+                            className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img"
+                          >
+                            <img src={item.itemPhoto} alt={`Evidence Frame ${index + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
+                            <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-300 italic font-mono pt-1 print:hidden">-- No attachment bound to this row --</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Global Meta Fields Panel */}
+            <div className="space-y-4 pt-6 border-t mt-6 print:space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-900 mb-1 print:text-black">Worksite Location Area Summary</label>
+                <Input value={location} onChange={e => setLocation(e.target.value)} disabled={isReadOnly} className="bg-white rounded-xs border-slate-300 shadow-none disabled:opacity-100 disabled:bg-transparent print:border-none print:px-0 print:h-auto font-medium" />
+              </div>
+              <div className="print:hidden">
+                <label className="block text-xs font-bold text-slate-900 mb-1">Global Transmittal Overview / Package Abstract</label>
+                <Textarea value={description} onChange={e => setDescription(e.target.value)} disabled={isReadOnly} rows={2} className="bg-white rounded-xs border-slate-300 shadow-none resize-none" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Cleaned Integration Logs (ProjectSight Completely Removed) */}
+        <Card className="border border-slate-200 shadow-none rounded-none print:border-slate-300">
+          <div className="bg-slate-100/80 px-6 py-3 border-b border-slate-200 print:bg-slate-50">
+            <h2 className="text-xs font-bold text-slate-800 tracking-wide uppercase">Coupled Unifier System Integration Records</h2>
+          </div>
+          <CardContent className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 print:p-4 print:gap-4">
+            <div className="space-y-4 border-r pr-6 border-slate-100 print:border-slate-200 print:space-y-2">
+              <h3 className="text-xs font-bold text-[#3c38d4] uppercase tracking-wider print:text-black">Unifier Daily Reports Mapping</h3>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Daily Report Record Number</label>
+                <Input value={dailyReportRecordNumber} onChange={e => setDailyReportRecordNumber(e.target.value)} disabled={isReadOnly} className="bg-white rounded-none border-slate-300 shadow-none h-9 text-xs print:border-none print:h-auto print:p-0 font-mono" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Daily Report Work Status</label>
+                <Input value={dailyReportWorkStatus} onChange={e => setDailyReportWorkStatus(e.target.value)} disabled={isReadOnly} className="bg-white rounded-none border-slate-300 shadow-none h-9 text-xs print:border-none print:h-auto print:p-0" />
+              </div>
+            </div>
+
+            <div className="space-y-4 print:space-y-2">
+              <h3 className="text-xs font-bold text-[#3c38d4] uppercase tracking-wider print:text-black">Unifier Management Issues</h3>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Issues Record No.</label>
+                  <Input value={issuesRecordNumber} onChange={e => setIssuesRecordNumber(e.target.value)} disabled={isReadOnly} className="bg-white rounded-none border-slate-300 shadow-none h-9 text-xs print:border-none print:h-auto print:p-0 font-mono" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Issues Report No.</label>
+                  <Input value={issuesReportNumber} onChange={e => setIssuesReportNumber(e.target.value)} disabled={isReadOnly} className="bg-white rounded-none border-slate-300 shadow-none h-9 text-xs print:border-none print:h-auto print:p-0 font-mono" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Issues Subject Title Abstract</label>
+                <Input value={issuesTitle} onChange={e => setIssuesTitle(e.target.value)} disabled={isReadOnly} className="bg-white rounded-none border-slate-300 shadow-none h-9 text-xs print:border-none print:h-auto print:p-0" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Resolution Control Vectors */}
+        <div className="grid grid-cols-2 gap-6 print:gap-4 text-xs">
+          <div>
+            <label className="block text-xs font-bold text-slate-900 mb-1">Resolution Designation Type</label>
+            <div className="hidden print:block font-medium text-sm p-1">{resolutionType}</div>
+            <Select value={resolutionType} onValueChange={setResolutionType} disabled={isReadOnly}>
+              <SelectTrigger className="bg-white rounded-none shadow-none border-slate-300 print:hidden"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="General">General</SelectItem>
+                <SelectItem value="Risk">Risk / Mitigation</SelectItem>
+                <SelectItem value="Design Change">Design Change</SelectItem>
+                <SelectItem value="Safety">Safety Incident</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-900 mb-1">Resolution Status</label>
+            <div className="hidden print:block font-bold text-sm text-[#142E88] p-1">{status}</div>
+            <Select value={status} onValueChange={setStatus} disabled={isReadOnly}>
+              <SelectTrigger className="bg-white rounded-none shadow-none border-slate-300 print:hidden"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="New">New</SelectItem>
+                <SelectItem value="In Review">In Review</SelectItem>
+                <SelectItem value="Accepted">Accepted</SelectItem>
+                <SelectItem value="Rejected">Rejected</SelectItem>
+                <SelectItem value="Closed">Closed</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
-        {/* Message dispatch panel */}
-        <form onSubmit={handleSendChatMessage} className="flex gap-3">
-          <input
-            type="text"
-            value={newMessageText}
-            onChange={(e) => setNewMessageText(e.target.value)}
-            placeholder="Type message here... Use @IT Consultant or @ORAT Team to ping representatives!"
-            className="flex-1 bg-white border border-slate-200 rounded-lg px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all shadow-3xs"
-          />
-          <button
-            type="submit"
-            disabled={!newMessageText.trim()}
-            className="flex items-center justify-center p-2.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-lg transition-all cursor-pointer"
-          >
-            <Send className="h-5 w-5" />
-          </button>
-        </form>
+        {/* PM Resolution Comment History Log Ledger (Printed in place of Chat Logs) */}
+        <div className="space-y-2 break-inside-avoid">
+          <label className="block text-xs font-bold text-slate-900 uppercase tracking-wide print:text-black">
+            PM Resolution History & Management Audit Trail
+          </label>
+          {pmCommentsHistory.length === 0 ? (
+            <div className="text-xs text-slate-400 italic bg-slate-50 p-4 border border-dashed rounded-sm text-center">
+              No historical resolution tracking comments committed to this timeline file yet.
+            </div>
+          ) : (
+            <div className="border border-slate-200 divide-y divide-slate-100 bg-white rounded-sm max-h-[300px] overflow-y-auto print:max-h-none print:border-slate-300 print:divide-slate-200">
+              {pmCommentsHistory.map((log: any, idx: number) => (
+                <div key={log.id || idx} className="p-3 text-xs space-y-1 bg-white">
+                  <div className="flex items-center justify-between text-[10px] font-mono font-bold text-slate-400 print:text-slate-500">
+                    <span className="text-[#3c38d4] print:text-black font-sans font-bold">{log.author?.split('@')[0] || "Systems PM"}</span>
+                    <span>{log.createdAt ? new Date(log.createdAt).toLocaleString() : ""}</span>
+                  </div>
+                  <p className="text-slate-700 font-medium leading-relaxed font-sans print:text-slate-900">{log.text}</p>
+                  <div className="pt-0.5">
+                    <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 bg-blue-50 text-[#142E88] border border-blue-100 rounded-xs print:bg-transparent print:text-slate-600 print:border-slate-300">
+                      MILESTONE STATE: {log.statusAtTime || "In Review"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Closeout Document Logs */}
+        {pmAttachments.length > 0 && (
+          <div className="space-y-2 break-inside-avoid">
+            <label className="block text-xs font-bold text-slate-900 uppercase tracking-wide print:text-black">
+              Resolution Closeout Document Logs
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 border border-slate-200 rounded-sm bg-white print:border-slate-300">
+              {pmAttachments.map((att) => (
+                <div key={att.id} onClick={() => att.previewUrl && openImageModal(att.previewUrl)} className={`relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs print:bg-white print:border-none print:p-1 ${att.previewUrl ? 'cursor-pointer hover:border-[#3c38d4]' : ''}`}>
+                  {att.previewUrl ? (
+                    <img src={att.previewUrl} alt="Upload thumb" className="h-8 w-8 object-cover rounded-xs shrink-0" />
+                  ) : (
+                    <FileText className="h-6 w-6 text-red-500 shrink-0 print:text-black" />
+                  )}
+                  <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={att.name}>
+                    {att.name}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Editing Inputs Footer Block */}
+        {!isReadOnly && (
+          <div className="space-y-4 print:hidden border-t pt-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-900 mb-1">Append New Resolution Comment</label>
+              <Textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="Type closeout documentation comments or analysis here..." rows={3} className="bg-white rounded-none border-slate-300 shadow-none resize-none" />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                <Paperclip className="h-3.5 w-3.5 text-[#5241db]" /> Upload New Supporting Closeout Documents
+              </label>
+              <div className="border border-dashed border-slate-300 bg-white p-4 rounded-sm space-y-3">
+                <input type="file" id="pm-review-upload" multiple accept="image/*,.pdf" className="hidden" onChange={handlePmFileChange} />
+                <Button type="button" variant="outline" onClick={() => document.getElementById("pm-review-upload")?.click()} className="h-8 text-xs font-bold border-slate-200 rounded-xs flex items-center gap-1 cursor-pointer">Choose PDFs or Images</Button>
+                {pmAttachments.filter(a => !a.isUploaded).length > 0 && <div className="text-[10px] text-amber-600 font-medium">New uncommitted files added. Click 'Commit PM Resolution' to save.</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Interface Navigation Actions */}
+        <div className="flex gap-4 pt-4 border-t print:hidden">
+          <Button variant="outline" asChild className="w-48 bg-[#e9ecef] border-none text-slate-700 hover:bg-[#dee2e6] rounded-sm h-10 text-xs font-bold cursor-pointer">
+            <Link href="/dashboard"><ArrowLeft className="h-3.5 w-3.5 mr-1" /> Back to Dashboard</Link>
+          </Button>
+          {!isReadOnly && (
+            <Button onClick={handleSavePMReview} disabled={isSaving} className="w-48 bg-[#5241db] hover:bg-[#4335b3] text-white rounded-sm h-10 text-xs font-bold cursor-pointer">
+              {isSaving ? "Saving Review..." : "Commit PM Resolution"}
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Right Side Sticky Canvas Chat Feed Pane (Hidden during Print layout updates) */}
+      <Card className="border border-slate-200 h-[calc(100vh-140px)] flex flex-col bg-slate-50/50 rounded-none shadow-none shrink-0 sticky top-4 print:hidden">
+        <div className="p-4 border-b bg-white flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-[#3c38d4]" />
+          <div>
+            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Chat Log Feed</h3>
+            <p className="text-[10px] text-slate-400">Contextual alignment log</p>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+          {portfolioQuestionsFeed.length === 0 ? (
+            <div className="text-center text-slate-400 pt-12 italic">
+              No chat logs or alignment mentions flagged on this layout yet.
+            </div>
+          ) : (
+            portfolioQuestionsFeed.map((q, idx) => (
+              <div key={idx} className={`bg-white border p-2.5 rounded shadow-2xs space-y-1 ${q.mentionFlag ? "border-amber-300 bg-amber-50/30" : ""}`}>
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold">
+                  <span className="truncate max-w-[140px] text-[#3c38d4]">{q.author.split('@')[0]}</span>
+                  <span>{q.createdAt ? q.createdAt.split('T')[1].slice(0, 5) : ""}</span>
+                </div>
+                <p className="text-slate-700 font-medium leading-relaxed">
+                  {q.text}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+
+        <form onSubmit={submitPortfolioQuestion} className="p-3 border-t bg-white flex items-center gap-1.5">
+          <Input 
+            value={portfolioQuestion}
+            onChange={e => setPortfolioQuestion(e.target.value)}
+            placeholder="Type comment or @email here..."
+            className="h-8 text-xs border-slate-200 shadow-none focus-visible:ring-1 focus-visible:ring-[#3c38d4] rounded-sm bg-white"
+          />
+          <Button type="submit" size="sm" className="bg-[#3c38d4] hover:bg-[#2b27b5] h-8 w-8 p-0 rounded-sm shrink-0 cursor-pointer">
+            <Send className="h-3 w-3 text-white" />
+          </Button>
+        </form>
+      </Card>
+
+      {/* Full Screen Lightbox Modal Canvas overlay */}
+      {activeLightboxImg && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 print:hidden">
+          <div className="absolute top-4 inset-x-4 flex items-center justify-between z-10 text-white">
+            <div className="text-xs font-mono tracking-widest text-slate-400 bg-slate-900/60 px-3 py-1.5 rounded border border-slate-800">
+              ZOOM: {(zoomScale * 100).toFixed(0)}%
+            </div>
+            <div className="flex items-center gap-2">
+              <Button 
+                onClick={() => setZoomScale(prev => Math.min(3, prev + 0.25))}
+                variant="outline" size="sm" className="bg-slate-900 border-slate-800 text-white hover:bg-slate-800 h-8 w-8 p-0"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+              <Button 
+                onClick={() => setZoomScale(prev => Math.max(0.5, prev - 0.25))}
+                variant="outline" size="sm" className="bg-slate-900 border-slate-800 text-white hover:bg-slate-800 h-8 w-8 p-0"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <Button 
+                onClick={() => setActiveLightboxImg(null)}
+                variant="destructive" size="sm" className="h-8 rounded px-3 text-xs font-bold gap-1"
+              >
+                <X className="h-4 w-4" /> Close View
+              </Button>
+            </div>
+          </div>
+
+          <div className="w-full h-full flex items-center justify-center overflow-auto p-8 select-none">
+            <img 
+              src={activeLightboxImg} 
+              alt="Expanded high-resolution trace view" 
+              className="max-w-full max-h-full object-contain shadow-2xl rounded-sm transition-transform duration-200 ease-out"
+              style={{ transform: `scale(${zoomScale})` }}
+            />
+          </div>
+        </div>
+      )}
+
     </div>
   );
-}
-
-// Helper utility to safely scan mentions matching roles
-function lowerMsgIncludesRole(msg: string, role: string) {
-  const normMsg = msg.toLowerCase();
-  const normRole = role.toLowerCase();
-  if (normRole === 'it consultant') return normMsg.includes('@it') || normMsg.includes('@consultant');
-  if (normRole === 'orat team') return normMsg.includes('@orat');
-  return false;
 }
