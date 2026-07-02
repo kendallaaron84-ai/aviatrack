@@ -1,7 +1,19 @@
 # Settings to manage and configure a Firebase App Hosting backend.
 # https://firebase.google.com/docs/app-hosting/configure
 
+version: v1beta1
+
 runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
+
+env:
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: "aviatrack-prod"
+  - variable: GOOGLE_SERVICE_ACCOUNT_EMAIL
+    value: "firebase-adminsdk-fbsvc@aviatrack-prod.iam.gserviceaccount.com"
+  - variable: FIREBASE_PRIVATE_KEY
+    secret: FIREBASE_PRIVATE_KEY
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
