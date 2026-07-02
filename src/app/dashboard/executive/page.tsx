@@ -49,6 +49,7 @@ export default function AviationExecutiveControlRoom() {
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [generatedReportData, setGeneratedReportData] = useState<any>(null);
   const [viewingSnapshot, setViewingSnapshot] = useState<any>(null);
+  const [severitySelection, setSeveritySelection] = useState<string>("ALL");
 
   // Database States
   const [allProjects, setAllProjects] = useState<any[]>([]);
@@ -796,30 +797,76 @@ export default function AviationExecutiveControlRoom() {
         </Card>
 
         {/* DYNAMIC RISK REGISTER AREA CONNECTED TO BI-WEEKLY LOGS */}
-        <Card className="border-slate-200 shadow-sm rounded-sm bg-white">
-          <CardHeader className="bg-slate-50 border-b py-2.5"><CardTitle className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active Threat Risk Register</CardTitle></CardHeader>
+        <Card className="border-slate-200 shadow-sm rounded-sm bg-white mt-4">
+          <CardHeader className="bg-slate-50 border-b py-2.5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+              Active Threat Risk Register
+            </CardTitle>
+            
+            {/* 🆕 PHASE 3 INTERACTIVE SEVERITY FILTER CONTROLLER WITH COUNTS CONTROLLER */}
+            <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-sm border border-slate-200 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setSeveritySelection("ALL")}
+                className={`px-2 py-0.5 rounded-xs text-[10px] font-mono font-bold border transition-all cursor-pointer ${
+                  severitySelection === "ALL" 
+                    ? "bg-[#142E88] text-white border-[#142E88]" 
+                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                ALL ({dynamicRisks.length})
+              </button>
+              {["Critical", "Mandatory", "High"].map((level) => {
+                const countNum = dynamicRisks.filter((r: any) => (r.impact || r.importance) === level).length;
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => setSeveritySelection(level)}
+                    className={`px-2 py-0.5 rounded-xs text-[10px] font-mono font-bold border transition-all cursor-pointer ${
+                      severitySelection === level 
+                        ? "bg-[#142E88] text-white border-[#142E88]" 
+                        : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    {level.toUpperCase()} <span className="ml-0.5 opacity-75">({countNum})</span>
+                  </button>
+                );
+              })}
+            </div>
+          </CardHeader>
+          
           <CardContent className="p-4 space-y-3">
-            {dynamicRisks.length === 0 ? (
-              <div className="text-center text-slate-400 text-xs italic py-10">No critical threats currently registered in PM status updates.</div>
+            {dynamicRisks.filter((risk: any) => severitySelection === "ALL" || (risk.impact || risk.importance) === severitySelection).length === 0 ? (
+              <div className="text-center text-slate-400 text-xs italic py-10">
+                No matching threats currently registered in PM status updates.
+              </div>
             ) : (
-              dynamicRisks.map((risk) => (
-                <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                      {risk.id} 
-                      <Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge>
-                      <span 
-                        className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase tracking-wider font-sans shrink-0 shadow-xs"
-                        style={{ backgroundColor: STATUS_COLORS[risk.roamCategory] || STATUS_COLORS[risk.status] || '#EF4444' }}
-                      >
-                        {risk.roamCategory}
+              dynamicRisks
+                .filter((risk: any) => severitySelection === "ALL" || (risk.impact || risk.importance) === severitySelection)
+                .map((risk: any) => (
+                  <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                        {risk.id} 
+                        <Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge>
+                        <span 
+                          className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase tracking-wider font-sans shrink-0 shadow-xs"
+                          style={{ backgroundColor: STATUS_COLORS[risk.roamCategory] || STATUS_COLORS[risk.status] || '#EF4444' }}
+                        >
+                          {risk.roamCategory}
+                        </span>
                       </span>
-                    </span>
-                    <Badge className={`text-[9px] font-bold rounded-xs shadow-none ${risk.impact === 'Critical' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>{risk.impact}</Badge>
+                      <Badge className={`text-[9px] font-bold rounded-xs shadow-none ${
+                        (risk.impact || risk.importance) === 'Critical' ? 'bg-red-50 text-red-700 border-red-200' : 
+                        (risk.impact || risk.importance) === 'Mandatory' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200'
+                      }`}>
+                        {risk.impact || risk.importance}
+                      </Badge>
+                    </div>
+                    <h4 className="font-semibold text-slate-700 leading-tight font-sans">{risk.threat}</h4>
                   </div>
-                  <h4 className="font-semibold text-slate-700 leading-tight">{risk.threat}</h4>
-                </div>
-              ))
+                ))
             )}
           </CardContent>
         </Card>

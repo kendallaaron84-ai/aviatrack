@@ -4,43 +4,25 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, ResponsiveContainer, Tooltip } from "recharts";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, query, doc, updateDoc } from "firebase/firestore";
+import { collection, onSnapshot, query, doc, updateDoc, addDoc, getDocs, where } from "firebase/firestore";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider"; 
-import { ShieldAlert, ExternalLink, Users, Layers, Calendar, RefreshCw } from "lucide-react";
-import { kmeans } from "ml-kmeans";
+import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter } from "lucide-react";
 
-// Agnostic Operational Parametric Normalization Weights
+// Operational Parametric Normalization Weights
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
 const IMPACT_WEIGHTS: Record<string, number> = { Critical: 1.0, Mandatory: 0.8, High: 0.6, Medium: 0.4, Low: 0.2, "N/A": 0.0 };
 
-// Reverse lookups for axis tick rendering labels
-const PROBABILITY_TICKS = [0, 1, 2, 3, 4];
-const IMPORTANCE_TICKS = ["Low", "Medium", "High", "Mandatory", "Critical"];
-
-const ROAM_CATEGORIES = ["New / Unassigned", "Owned", "Mitigated", "Accepted", "Resolved"];
-const PROBABILITY_LEVELS = [0, 1, 2, 3, 4];
-const IMPORTANCE_LEVELS = ["Critical", "Mandatory", "High", "Medium", "Low", "N/A"];
-
-// Lifecycle Management Explicit Status Color System
 const STATUS_COLORS: Record<string, string> = {
-  Resolved: "#10B981",   // Green 🟢
-  Accepted: "#3B82F6",   // Blue 🔵
-  Mitigated: "#883AE1",  // Purple 🟣
-  Owned: "#1A2D83",      // Brand Dark Blue 🔮
-  "New / Unassigned": "#EF4444", // Red 🔴
-  Risk: "#EF4444",       // Risk mapping fallback color 🔴
-  New: "#EF4444",        
-  Open: "#EF4444",       
-  WIP: "#F59E0B",        
-  "On Hold": "#64748B",
-  Withdrawn: "#94A3B8"
+  Resolved: "#10B981",   
+  Accepted: "#3B82F6",   
+  Mitigated: "#883AE1",  
+  Owned: "#1A2D83",      
+  "New / Unassigned": "#EF4444"
 };
 
-// Search tags generator for query defenses
 const generateSearchTags = (item: any, additionalPatches: Record<string, any> = {}) => {
   const merged = { ...item, ...additionalPatches };
   const textPool = [
@@ -49,7 +31,8 @@ const generateSearchTags = (item: any, additionalPatches: Record<string, any> = 
     merged.classification || "",
     merged.roamCategory || "",
     merged.status || "",
-    merged.projectId || ""
+    merged.projectId || "",
+    merged.owner || ""
   ].join(" ").toLowerCase();
   
   const words = textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1);
@@ -60,25 +43,14 @@ export default function RiskClusterDashboard() {
   const [raidqItems, setRaidqItems] = useState<any[]>([]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [commentText, setCommentText] = useState("");
-  const [daysHorizon, setDaysHorizon] = useState<number>(90);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // THE TRIGGER FUNCTION FOR FIELD OBSERVATIONS PIPELINE
-  const handleTriggerAiSync = async () => {
-    setIsSyncing(true);
-    try {
-      const res = await fetch("/api/analyze-raid", { method: "POST" });
-      const data = await res.json();
-      alert(`AI Sync Complete! Processed ${data.processedCount || 0} field observations strictly as Risks.`);
-    } catch (err) {
-      console.error(err);
-      alert("Failed to connect to the AI processing pipeline.");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
+  // Filter Configuration States
+  const [importanceFilter, setImportanceFilter] = useState<string>("ALL");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
 
-  // LIVE FIRESTORE STREAM DATA SYNC HOOK
+  // Live stream records hook
   useEffect(() => {
     const q = query(collection(db, "raid_matrix"));
     const unsub = onSnapshot(q, (snap) => {
@@ -93,50 +65,93 @@ export default function RiskClusterDashboard() {
     return () => unsub();
   }, [selectedItem]);
 
-  // Filter items dynamically by time horizon
-  const filteredTimelineItems = useMemo(() => {
-    const now = new Date();
+  // Comprehensive Date & Importance Filter Engine
+  const filteredItems = useMemo(() => {
     return raidqItems.filter(item => {
-      const createdDate = item.createdAt ? new Date(item.createdAt) : new Date();
-      const diffTime = Math.abs(now.getTime() - createdDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return diffDays <= daysHorizon;
+      // 1. Importance Filter
+      if (importanceFilter !== "ALL" && item.importance !== importanceFilter) return false;
+
+      // 2. Calendar Time Horizon Filter
+      if (item.createdAt) {
+        const timestamp = new Date(item.createdAt);
+        if (fromDate && timestamp < new Date(fromDate + "T00:00:00")) return false;
+        if (toDate && timestamp > new Date(toDate + "T23:59:59")) return false;
+      }
+      return true;
     });
-  }, [raidqItems, daysHorizon]);
+  }, [raidqItems, importanceFilter, fromDate, toDate]);
 
-  // Compute Coordinate Mapping
+  // Compute live contextual counts based on complete backend query snapshot
+  const importanceCounts = useMemo(() => {
+    const counts: Record<string, number> = { Critical: 0, Mandatory: 0, High: 0, Medium: 0, Low: 0 };
+    raidqItems.forEach(item => {
+      if (counts[item.importance] !== undefined) {
+        counts[item.importance]++;
+      }
+    });
+    return counts;
+  }, [raidqItems]);
+
+  // Coordinate Data Mapping normalizer
   const clusteredData = useMemo(() => {
-    if (filteredTimelineItems.length === 0) return [];
-
-    const vectors = filteredTimelineItems.map(item => [
-      IMPACT_WEIGHTS[item.importance] || IMPACT_WEIGHTS[item.impactLevel] || 0.2, 
-      PROBABILITY_WEIGHTS[Number(item.probability)] || 0.0
-    ]);
-
-    return filteredTimelineItems.map((item, idx) => ({
+    return filteredItems.map(item => ({
       ...item,
-      x: vectors[idx][0],
-      y: vectors[idx][1],
-      nodeColor: STATUS_COLORS[item.roamCategory] || STATUS_COLORS[item.status] || "#EF4444"
+      x: IMPACT_WEIGHTS[item.importance] || 0.2, 
+      y: PROBABILITY_WEIGHTS[Number(item.probability)] || 0.0,
+      nodeColor: STATUS_COLORS[item.roamCategory] || "#EF4444"
     }));
-  }, [filteredTimelineItems]);
+  }, [filteredItems]);
 
+  // AI Sync Log ingestion with query deduplication defenses
+  const handleTriggerAiSync = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch("/api/analyze-raid", { method: "POST" });
+      const data = await res.json();
+      alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0} items.`);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to safely establish background pipeline tunnel.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // State Patch updates with Integrated Audit Trail tracking arrays
   const handleUpdateParam = async (field: string, value: any) => {
     if (!selectedItem) return;
     try {
       const docRef = doc(db, "raid_matrix", selectedItem.id);
-      const patches: Record<string, any> = { [field]: value };
+      
+      // Constructing historical audit record snapshot
+      const currentAuditRecord = {
+        previousClassification: selectedItem.classification || "Risk",
+        previousProbability: selectedItem.probability !== undefined ? selectedItem.probability : 0,
+        previousImportance: selectedItem.importance || "Medium",
+        previousOwner: selectedItem.owner || "Unassigned",
+        modifiedField: field,
+        oldValue: selectedItem[field] || "None",
+        newValue: value,
+        timestamp: new Date().toISOString(),
+        operator: "Program Manager"
+      };
+
+      const existingAuditTrail = selectedItem.auditTrailHistory || [];
+      const updatedAuditTrail = [currentAuditRecord, ...existingAuditTrail];
+
+      const patches: Record<string, any> = { 
+        [field]: value,
+        auditTrailHistory: updatedAuditTrail
+      };
+      
       if (field === "roamCategory") {
         patches.status = value === "New / Unassigned" ? "Identified" : value;
       }
       
-      // Defend against case-sensitivity drops by recalculating search_tags on update
-      const search_tags = generateSearchTags(selectedItem, patches);
-      patches.search_tags = search_tags;
-
+      patches.search_tags = generateSearchTags(selectedItem, patches);
       await updateDoc(docRef, patches);
     } catch (err) {
-      console.error("Failed to commit matrix updates:", err);
+      console.error("Meticulous change logging fault:", err);
     }
   };
 
@@ -154,77 +169,117 @@ export default function RiskClusterDashboard() {
       await updateDoc(doc(db, "raid_matrix", selectedItem.id), { historicalComments: updatedHistory });
       setCommentText("");
     } catch (err) {
-      console.error("Failed to append historical comment log:", err);
+      console.error("Failed to append note tracks:", err);
     }
   };
 
   return (
     <div className="max-w-[1700px] mx-auto px-6 py-6 space-y-6 bg-[#F8FAFC] text-slate-900 min-h-screen font-sans">
       
-      {/* HEADER CONTROL BANNER */}
+      {/* RENAME TARGET: WORKBENCH RISK REGISTER HEADER CONTROL BANNER */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-200 pb-5 gap-4">
         <div className="flex items-center gap-3">
           <ShieldAlert className="h-6 w-6 text-[#142E88]" />
           <div>
-            <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">Workbench Risk Exposure Workspace</h1>
-            <p className="text-xs text-slate-500 font-mono">Dynamic Probability & Impact Registry</p>
+            <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">Workbench Risk Register</h1>
+            <p className="text-xs text-slate-500 font-mono">Deduplicated Probability & Impact Management Console</p>
           </div>
         </div>
 
-        {/* INTEGRATED TIME HORIZON & AI SYNC CONSOLE MATRIX */}
-        <div className="flex items-center gap-4 bg-white p-2 border border-slate-200 rounded-sm shadow-xs min-w-[480px]">
+        {/* TIME HORIZON TO - FROM CALENDAR DATES FILTER MODULE */}
+        <div className="flex flex-wrap items-center gap-4 bg-white p-3 border border-slate-200 rounded-sm shadow-xs font-mono text-xs">
           <Button 
             type="button"
             onClick={handleTriggerAiSync}
             disabled={isSyncing}
-            className="bg-[#142E88] hover:bg-blue-800 text-white font-bold h-10 px-3 rounded-none text-[10px] uppercase tracking-wider font-mono flex items-center gap-1.5 shadow-none shrink-0 disabled:opacity-50"
+            className="bg-[#142E88] hover:bg-blue-800 text-white font-bold h-9 px-3 rounded-none text-[10px] uppercase tracking-wider flex items-center gap-1.5 shrink-0"
           >
             <RefreshCw className={`h-3 w-3 ${isSyncing ? 'animate-spin' : ''}`} />
-            {isSyncing ? "Syncing..." : "Sync Logs"}
+            Sync Logs
           </Button>
 
-          <div className="h-6 w-px bg-slate-200 shrink-0" />
+          <div className="hidden sm:block h-6 w-px bg-slate-200 shrink-0" />
 
-          <div className="flex-1 flex items-center gap-3 pr-2">
-            <Calendar className="h-4 w-4 text-slate-400 shrink-0" />
-            <div className="flex-1 space-y-1">
-              <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
-                <span>Time Horizon Filter</span>
-                <span className="text-[#142E88] font-black">{daysHorizon} Days</span>
-              </div>
-              <Slider value={[daysHorizon]} onValueChange={(val) => setDaysHorizon(val[0])} min={7} max={180} step={1} className="cursor-pointer" />
-            </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase">From:</span>
+            <input 
+              type="date" 
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="border border-slate-200 px-2 py-1 text-slate-700 bg-white focus:outline-none"
+            />
           </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase">To:</span>
+            <input 
+              type="date" 
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="border border-slate-200 px-2 py-1 text-slate-700 bg-white focus:outline-none"
+            />
+          </div>
+
+          {(fromDate || toDate) && (
+            <Button 
+              size="sm" 
+              variant="ghost" 
+              onClick={() => { setFromDate(""); setToDate(""); }}
+              className="text-rose-500 hover:bg-rose-50 font-bold px-2 py-0 text-[10px]"
+            >
+              Clear
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* CORE DISPLAY MATRIX GRID */}
+      {/* DYNAMIC FILTER ROW ACCUMULATOR CONTROL HOOKS */}
+      <div className="flex flex-wrap items-center gap-2 bg-white p-3 border border-slate-200 rounded-sm">
+        <span className="text-[10px] font-mono font-bold uppercase text-slate-400 mr-2 flex items-center gap-1">
+          <Filter className="h-3 w-3" /> Importance Filters:
+        </span>
+        <button
+          onClick={() => setImportanceFilter("ALL")}
+          className={`px-3 py-1 text-xs font-mono font-bold border transition-all ${
+            importanceFilter === "ALL" ? "bg-[#142E88] text-white border-[#142E88]" : "bg-slate-50 text-slate-600 border-slate-200 hover:border-slate-300"
+          }`}
+        >
+          All Items ({raidqItems.length})
+        </button>
+        {Object.keys(importanceCounts).map((lvl) => (
+          <button
+            key={lvl}
+            onClick={() => setImportanceFilter(lvl)}
+            className={`px-3 py-1 text-xs font-mono font-bold border transition-all ${
+              importanceFilter === lvl ? "bg-[#142E88] text-white border-[#142E88]" : "bg-slate-50 text-slate-600 border-slate-200 hover:border-slate-300"
+            }`}
+          >
+            {lvl} <span className="ml-1 opacity-70 font-black">({importanceCounts[lvl]})</span>
+          </button>
+        ))}
+      </div>
+
+      {/* CANVAS GRID SCATTER SPLIT LAYOUT */}
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-6">
         
         <div className="space-y-6">
-          {/* THE CANVAS SCATTER GRID CHART */}
-          <Card className="rounded-none border-slate-200 bg-white shadow-xs relative">
+          <Card className="rounded-none border-slate-200 bg-white shadow-xs">
             <CardHeader className="border-b border-slate-100 py-3 bg-slate-50/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <CardTitle className="text-xs font-bold font-mono uppercase tracking-wider text-slate-600 flex items-center gap-2">
-                <Layers className="h-4 w-4 text-slate-400" /> Dynamic Risk Scatter Mapping Grid
+                <Layers className="h-4 w-4 text-slate-400" /> Dynamic Cluster Mapping View
               </CardTitle>
-              
-              {/* 🟢 NEW VISUAL LEGEND SUB-ROW BAR */}
               <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono font-bold">
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#EF4444]" /> New / Unassigned</div>
+                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#EF4444]" /> New</div>
                 <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#1A2D83]" /> Owned</div>
                 <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#883AE1]" /> Mitigated</div>
                 <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#3B82F6]" /> Accepted</div>
                 <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#10B981]" /> Resolved</div>
               </div>
             </CardHeader>
-            <CardContent className="p-6 h-[540px]">
-
+            <CardContent className="p-6 h-[500px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 20, right: 30, bottom: 35, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                  
-                  {/* X-AXIS: IMPORTANCE (0.0 to 1.0 Internal Normalization Map) */}
                   <XAxis 
                     type="number" 
                     dataKey="x" 
@@ -240,11 +295,8 @@ export default function RiskClusterDashboard() {
                       if (val === 1.0) return "Critical";
                       return "";
                     }}
-                    label={{ value: "Risk Importance / Impact Vector ──>", position: "bottom", offset: 15, className: "font-mono text-[10px] font-black uppercase text-slate-400 tracking-wider" }}
-                    className="font-mono text-[10px] font-bold text-slate-500"
+                    className="font-mono text-[10px] text-slate-500"
                   />
-                  
-                  {/* Y-AXIS: PROBABILITY (0.0 to 1.0 Internal Normalization Map) */}
                   <YAxis 
                     type="number" 
                     dataKey="y" 
@@ -253,60 +305,46 @@ export default function RiskClusterDashboard() {
                     axisLine={{ stroke: '#CBD5E1' }}
                     ticks={[0.0, 0.25, 0.50, 0.75, 1.0]}
                     tickFormatter={(val) => {
-                      if (val === 0.0) return "0 (None)";
+                      if (val === 0.0) return "0";
                       if (val === 0.25) return "1";
                       if (val === 0.50) return "2";
                       if (val === 0.75) return "3";
-                      if (val === 1.0) return "4 (Critical)";
+                      if (val === 1.0) return "4";
                       return "";
                     }}
-                    label={{ value: "◄── Probability / Likelihood Rating", angle: -90, position: "insideLeft", offset: -5, className: "font-mono text-[10px] font-black uppercase text-slate-400 tracking-wider" }}
-                    className="font-mono text-[10px] font-bold text-slate-500"
+                    className="font-mono text-[10px] text-slate-500"
                   />
-                  
                   <ZAxis type="number" range={[140, 160]} />
-                  
                   <Tooltip 
                     cursor={{ strokeDasharray: '3 3' }}
                     content={({ active, payload }) => {
                       if (active && payload && payload.length) {
                         const data = payload[0].payload;
                         return (
-                          <div className="bg-white border border-slate-200 p-2 text-xs font-mono rounded shadow-lg text-slate-800">
+                          <div className="bg-white border border-slate-200 p-2 text-xs font-mono shadow-lg text-slate-800">
                             <p className="font-bold text-[#142E88]">{data.title}</p>
-                            <p>State Status: {data.roamCategory || "New / Unassigned"}</p>
-                            <p>Importance: {data.importance || "Not set"}</p>
-                            <p>Probability: {data.probability !== undefined ? data.probability : "Not set"}</p>
+                            <p>Status: {data.roamCategory || "New / Unassigned"}</p>
+                            <p>Owner: {data.owner || "Unassigned"}</p>
                           </div>
                         );
                       }
                       return null;
                     }}
                   />
-
                   <Scatter 
                     data={clusteredData} 
                     shape={(props: any) => {
                       const { cx, cy, payload } = props;
                       const isSelected = selectedItem?.id === payload?.id;
-                      
-                      // Evaluate exact status color mapping flawlessly to eliminate visual color disconnect
-                      const dotColor = (payload && (
-                        STATUS_COLORS[payload.roamCategory] || 
-                        STATUS_COLORS[payload.status] || 
-                        STATUS_COLORS[payload.classification] || 
-                        payload.nodeColor
-                      )) || "#EF4444";
-
                       return (
                         <circle 
                           cx={cx} 
                           cy={cy} 
                           r={isSelected ? 11 : 8} 
-                          fill={dotColor} 
+                          fill={payload.nodeColor} 
                           stroke={isSelected ? "#000000" : "#FFFFFF"}
                           strokeWidth={2}
-                          className="transition-all duration-150 cursor-pointer hover:scale-125 shadow-sm"
+                          className="cursor-pointer hover:scale-125 transition-transform"
                         />
                       );
                     }}
@@ -317,27 +355,27 @@ export default function RiskClusterDashboard() {
             </CardContent>
           </Card>
 
-          {/* DETAIL TRIAGE WORKSPACE SECTION VIEW PANEL */}
+          {/* TRIAGE CONSOLE WORKSPACE SECTION */}
           {selectedItem && (
             <Card className="rounded-none border-slate-200 bg-white shadow-xs">
               <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-[#142E88] flex justify-between items-center font-mono">
                   <span>Triage Management Console: {selectedItem.title}</span>
-                  <span className="text-[10px] text-slate-400 font-normal">Analyzed: {new Date(selectedItem.analyzedAt || Date.now()).toLocaleDateString()}</span>
+                  <span className="text-[10px] text-slate-400">ID Key: {selectedItem.id.slice(0, 8).toUpperCase()}</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-6 space-y-6 text-xs font-mono">
                 
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 border-b border-slate-200 bg-slate-50/50 p-4 border rounded-sm">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4 border-b border-slate-200 bg-slate-50/50 p-4 border rounded-sm">
                   
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">RAIDQ Type</span>
                     <select
                       value={selectedItem.classification || "Risk"}
                       onChange={(e) => handleUpdateParam("classification", e.target.value)}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer font-bold text-slate-800"
+                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
-                      {["Risk", "Action", "Assumption", "Issue", "Decision", "Dependency", "Question"].map(type => (
+                      {["Risk", "Action", "Assumption", "Issue", "Decision"].map(type => (
                         <option key={type} value={type}>{type}</option>
                       ))}
                     </select>
@@ -348,7 +386,7 @@ export default function RiskClusterDashboard() {
                     <select
                       value={selectedItem.probability !== undefined ? Number(selectedItem.probability) : 0}
                       onChange={(e) => handleUpdateParam("probability", Number(e.target.value))}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer text-slate-800"
+                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
                       {[0, 1, 2, 3, 4].map(num => (
                         <option key={num} value={num}>{num} / 4</option>
@@ -359,9 +397,9 @@ export default function RiskClusterDashboard() {
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Importance</span>
                     <select
-                      value={selectedItem.importance || selectedItem.impactLevel || "Medium"}
+                      value={selectedItem.importance || "Medium"}
                       onChange={(e) => handleUpdateParam("importance", e.target.value)}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer text-slate-800"
+                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
                       {["Critical", "Mandatory", "High", "Medium", "Low", "N/A"].map(lvl => (
                         <option key={lvl} value={lvl}>{lvl}</option>
@@ -369,15 +407,16 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
+                  {/* 4.b INTEGRATED TRIAGE CARD COMPONENT OWNER ASSIGNMENT */}
                   <div className="space-y-1">
-                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Detectability</span>
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Assigned Owner</span>
                     <select
-                      value={selectedItem.detectability || "Medium"}
-                      onChange={(e) => handleUpdateParam("detectability", e.target.value)}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer text-slate-800"
+                      value={selectedItem.owner || "Unassigned"}
+                      onChange={(e) => handleUpdateParam("owner", e.target.value)}
+                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none font-bold text-[#142E88]"
                     >
-                      {["High", "Medium", "Low", "N/A"].map(det => (
-                        <option key={det} value={det}>{det}</option>
+                      {["Unassigned", "ITSD PM", "PMCM", "Others"].map(own => (
+                        <option key={own} value={own}>{own}</option>
                       ))}
                     </select>
                   </div>
@@ -387,7 +426,7 @@ export default function RiskClusterDashboard() {
                     <select
                       value={selectedItem.roamCategory || "New / Unassigned"}
                       onChange={(e) => handleUpdateParam("roamCategory", e.target.value)}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer font-bold text-slate-800"
+                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
                       {["New / Unassigned", "Owned", "Mitigated", "Accepted", "Resolved"].map(cat => (
                         <option key={cat} value={cat}>{cat}</option>
@@ -395,24 +434,30 @@ export default function RiskClusterDashboard() {
                     </select>
                   </div>
 
-                  <div className="space-y-1">
-                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Status Variant</span>
-                    <select
-                      value={selectedItem.status || "Identified"}
-                      onChange={(e) => handleUpdateParam("status", e.target.value)}
-                      className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none focus:border-[#142E88] cursor-pointer text-slate-800"
-                    >
-                      {["Identified", "Open", "WIP", "On Hold", "Resolved", "Withdrawn"].map(st => (
-                        <option key={st} value={st}>{st}</option>
-                      ))}
-                    </select>
-                  </div>
-
                 </div>
 
-                <div className="space-y-1 text-[11px] border-b border-slate-100 pb-4">
-                  <span className="text-slate-400 block text-[9px] uppercase font-bold">Field Inspector Observation Context</span>
-                  <p className="text-slate-700 leading-relaxed bg-slate-50/50 p-3 border border-slate-100 font-sans">{selectedItem.description}</p>
+                {/* 3. CORE DISPLAY MATRIX FOR SYSTEM AUDIT TRAIL LOGS */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Observation Abstract Context</span>
+                    <p className="text-slate-700 leading-relaxed bg-slate-50 p-3 border border-slate-100 font-sans">{selectedItem.description}</p>
+                  </div>
+                  
+                  <div className="space-y-1 flex flex-col">
+                    <span className="text-rose-500 block text-[9px] uppercase font-bold tracking-wider">Historical Change Audit Trail</span>
+                    <div className="flex-1 border border-amber-200 bg-amber-50/20 p-2 overflow-y-auto max-h-[110px] space-y-1.5 text-[10px]">
+                      {selectedItem.auditTrailHistory?.map((audit: any, aIdx: number) => (
+                        <div key={aIdx} className="border-b border-dashed border-slate-200 pb-1 last:border-0">
+                          <p className="text-slate-500 font-bold">
+                            [{new Date(audit.timestamp).toLocaleDateString()}] Field <span className="text-[#142E88]">"{audit.modifiedField}"</span> adjusted from <span className="text-slate-700 font-black">"{audit.oldValue}"</span> → <span className="text-emerald-700 font-black">"{audit.newValue}"</span>
+                          </p>
+                        </div>
+                      ))}
+                      {(!selectedItem.auditTrailHistory || selectedItem.auditTrailHistory.length === 0) && (
+                        <span className="text-slate-400 italic block text-center pt-6">No historical structural corrections recorded.</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-6 pt-2">
@@ -422,20 +467,20 @@ export default function RiskClusterDashboard() {
                       value={commentText}
                       onChange={e => setCommentText(e.target.value)}
                       placeholder="Commit audit adjustments or response logic tracks here..."
-                      rows={3}
-                      className="bg-slate-50 border-slate-200 text-xs text-slate-800 rounded-none focus:border-slate-300 shadow-none resize-none"
+                      rows={2}
+                      className="bg-slate-50 border-slate-200 text-xs rounded-none resize-none"
                     />
-                    <Button type="submit" size="sm" className="bg-[#142E88] hover:bg-blue-800 text-white font-bold rounded-none text-[10px] font-mono uppercase tracking-wider">
-                      Submit Response Comment
+                    <Button type="submit" size="sm" className="bg-[#142E88] hover:bg-blue-800 text-white font-bold rounded-none text-[10px] uppercase font-mono">
+                      Submit Comment
                     </Button>
                   </form>
 
-                  <div className="flex flex-col h-[130px]">
-                    <span className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Historical Comments</span>
-                    <div className="flex-1 border border-slate-200 bg-slate-50 p-2 overflow-y-auto space-y-2 text-[10px] rounded-none">
+                  <div className="flex flex-col h-[110px]">
+                    <span className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Historical Triage Notes</span>
+                    <div className="flex-1 border border-slate-200 bg-slate-50 p-2 overflow-y-auto space-y-2 text-[10px]">
                       {selectedItem.historicalComments?.map((c: any, cIdx: number) => (
-                        <div key={cIdx} className="border-b border-slate-200 pb-1.5 last:border-0">
-                          <div className="flex justify-between text-slate-400 font-bold mb-0.5 font-mono">
+                        <div key={cIdx} className="border-b border-slate-200 pb-1 last:border-0">
+                          <div className="flex justify-between text-slate-400 font-bold mb-0.5">
                             <span>{c.author}</span>
                             <span>{new Date(c.timestamp).toLocaleDateString()}</span>
                           </div>
@@ -443,7 +488,7 @@ export default function RiskClusterDashboard() {
                         </div>
                       ))}
                       {(!selectedItem.historicalComments || selectedItem.historicalComments.length === 0) && (
-                        <span className="text-slate-400 italic block text-center pt-8 font-mono">No historical notes logs recorded.</span>
+                        <span className="text-slate-400 italic block text-center pt-6">No historical notes recorded.</span>
                       )}
                     </div>
                   </div>
@@ -454,15 +499,15 @@ export default function RiskClusterDashboard() {
           )}
         </div>
 
-        {/* RIGHT INDEX PANEL (DYNAMIC REGISTRY INDEX) */}
-        <Card className="rounded-none border-slate-200 bg-white shadow-xs h-[715px] flex flex-col">
+        {/* RIGHT DYNAMIC REGISTRY SIDEBAR INDEX PANEL */}
+        <Card className="rounded-none border-slate-200 bg-white shadow-xs h-[650px] flex flex-col">
           <CardHeader className="border-b border-slate-100 py-4 bg-slate-50/60 shrink-0">
             <div className="flex items-center gap-2 text-slate-700">
               <Users className="h-4 w-4 text-[#142E88]" />
               <div>
                 <CardTitle className="text-xs font-bold uppercase tracking-wider font-mono text-slate-700">Active Risk Registry Index</CardTitle>
-                <CardDescription className="text-[10px] text-slate-400 font-mono font-medium">
-                  {clusteredData.length} active logs within scope bounds
+                <CardDescription className="text-[10px] text-slate-400 font-mono">
+                  {filteredItems.length} active logs matching current filter scope
                 </CardDescription>
               </div>
             </div>
@@ -472,25 +517,32 @@ export default function RiskClusterDashboard() {
               <div
                 key={item.id}
                 onClick={() => setSelectedItem(item)}
-                className={`p-3 border font-mono text-[11px] cursor-pointer transition-all flex flex-col gap-1.5 rounded-none ${
+                className={`p-3 border font-mono text-[11px] cursor-pointer transition-all flex flex-col gap-1.5 ${
                   selectedItem?.id === item.id 
-                    ? 'border-[#142E88] bg-blue-50/50 shadow-xs' 
+                    ? 'border-[#142E88] bg-blue-50/50' 
                     : 'border-slate-200 bg-white hover:border-slate-400'
                 }`}
               >
                 <div className="flex justify-between items-start gap-2">
                   <span className="font-bold text-slate-800 truncate max-w-[210px]">{item.title}</span>
-                  <span 
-                    className="h-2 w-2 rounded-full mt-1.5 shrink-0" 
-                    style={{ backgroundColor: item.nodeColor }}
-                  />
+                  <span className="h-2 w-2 rounded-full mt-1.5 shrink-0" style={{ backgroundColor: item.nodeColor }} />
                 </div>
                 <div className="flex justify-between items-center text-[10px] text-slate-400">
-                  <span>State: <strong className="text-slate-600 font-bold">{item.roamCategory || "Unassigned"}</strong></span>
-                  <span>Impact: <strong className="text-slate-600 font-bold">{item.importance || "N/A"}</strong></span>
+                  <span>State: <strong className="text-slate-600">{item.roamCategory || "Unassigned"}</strong></span>
+                  <span>Impact: <strong className="text-slate-600">{item.importance || "N/A"}</strong></span>
                 </div>
+                {item.owner && (
+                  <div className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-xs self-start font-black">
+                    Owner: {item.owner}
+                  </div>
+                )}
               </div>
             ))}
+            {filteredItems.length === 0 && (
+              <div className="text-center text-xs text-slate-400 italic pt-12">
+                No data entries found within scope filters.
+              </div>
+            )}
           </CardContent>
         </Card>
 

@@ -41,7 +41,6 @@ export function GlobalHeaderNotificationHub() {
   useEffect(() => {
     if (!currentUserEmail) return;
 
-    // Monitor active task mentions tagged to your profile layout
     const q = query(
       collectionGroup(db, "portfolio_questions"),
       where("mentionFlag", "==", true),
@@ -163,7 +162,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => unsub();
   }, []);
 
-  // 🔮 OFFLINE KEEP-ALIVE: Background keep-alive loop to refresh ID tokens every 45 minutes
   useEffect(() => {
     const interval = setInterval(async () => {
       if (auth.currentUser) {
@@ -213,7 +211,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <form onSubmit={handlePasswordLogin} className="p-8 bg-white shadow-md border rounded-xl max-w-md w-full space-y-4 font-sans">
           <div className="text-center space-y-2">
             <Lock className="h-8 w-8 text-[#142E88] mx-auto" />
-            <h2 className="text-xl font-bold text-[#142E88]">System Portal</h2>
+            <h2 className="text-xl font-bold text-[#142E88]">_._</h2>
             <p className="text-xs text-slate-500">Sign in using your assigned project profile.</p>
           </div>
           
@@ -298,7 +296,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const showFinancialLedger = isMasterAdmin || isPortfolioManager || isProjectManager;
   const showAdminConsole = isMasterAdmin;
 
-  // Sidebar dynamic layout list
   const navItems = [];
   if (showPortfolioDashboard) {
     navItems.push({ name: 'Portfolio Dashboard', href: '/dashboard/executive', icon: PieChart });
@@ -309,9 +306,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (showProjectWorkbench) {
     navItems.push({ name: 'Project Workbench', href: '/dashboard/workbench', icon: Briefcase });
   }
-  // 🔐 Fix Workbench Risk Cluster mapping to point exactly to /dashboard/workbench/cluster
+  // 🔐 Updated label to 'PM Risk Registry' and preserved route stability
   if (showProjectWorkbench && ["PORTFOLIO_MANAGER", "PROGRAM_MANAGER", "PROJECT_MANAGER"].includes(userRole)) {
-    navItems.push({ name: 'Workbench Risk Cluster', href: '/dashboard/workbench/cluster', icon: Activity });
+    navItems.push({ name: 'PM Risk Registry', href: '/dashboard/workbench/cluster', icon: Activity });
   }
   if (showDrawingsAndBulletins) {
     navItems.push({ name: 'Drawings & Bulletins', href: '/dashboard/drawings', icon: FileText });
@@ -332,20 +329,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     navItems.push({ name: 'Administrative Console', href: '/dashboard/admin', icon: Settings });
   }
 
+  // Adjusted subpath hierarchy logic so main routes don't cannibalize specific tracks
   const isActive = (path: string) => {
     if (path === '/dashboard') return pathname === '/dashboard';
+    if (path === '/dashboard/workbench') return pathname === '/dashboard/workbench';
     return pathname?.startsWith(path);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
-      {/* 📱 Mobile Navbar Header */}
       <header className="flex md:hidden items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800 text-slate-100 shrink-0">
         <div className="flex items-center gap-2">
           <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
             <Lock className="h-4 w-4 text-sky-400" />
           </div>
-          <span className="font-bold text-md text-white tracking-wider uppercase">System Portal</span>
+          <span className="font-bold text-md text-white tracking-wider uppercase">_._</span>
         </div>
         <button 
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -355,16 +353,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </button>
       </header>
 
-      {/* 🖥️ Desktop Left Navigation Sidebar (Maintaining beautiful dark contrast bg-slate-900) */}
       <aside className="hidden md:flex flex-col w-64 bg-slate-900 text-slate-200 border-r border-slate-800 flex-shrink-0 relative">
         <div className="flex items-center gap-2 px-6 py-6 border-b border-slate-800">
           <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
             <Lock className="h-4 w-4 text-sky-400" />
           </div>
-          <span className="font-extrabold text-lg text-white tracking-wider uppercase">System Portal</span>
+          <span className="font-extrabold text-lg text-white tracking-wider uppercase">_._</span>
         </div>
 
-        {/* User Context Header */}
         <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40 flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">{permissions.title}</p>
@@ -379,7 +375,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {navItems.map((item, idx) => {
             const Icon = item.icon;
             const active = isActive(item.href);
-            // Append an identifier index when listing identical hrefs like Documents and Drawings & Bulletins
             const keyId = `${item.href}-${idx}`;
             return (
               <Link
@@ -398,7 +393,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           })}
         </nav>
 
-        {/* User session footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/50">
           <button
             onClick={handleLogout}
@@ -410,7 +404,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </aside>
 
-      {/* Mobile Drawer Overlay navigation logic */}
       {mobileMenuOpen && (
         <div className="md:hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex text-slate-100">
           <div className="w-4/5 max-w-sm bg-slate-900 p-6 flex flex-col h-full border-r border-slate-800 animate-slide-in">
@@ -419,7 +412,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center border border-sky-500/30">
                   <Lock className="h-4 w-4 text-sky-400" />
                 </div>
-                <span className="font-extrabold text-md text-white tracking-wider uppercase">System Portal</span>
+                <span className="font-extrabold text-md text-white tracking-wider uppercase">_._</span>
               </div>
               <button onClick={() => setMobileMenuOpen(false)} className="cursor-pointer">
                 <X className="h-6 w-6 text-slate-400 hover:text-white" />
@@ -473,7 +466,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       )}
 
-      {/* Main workspace routing target - Reverted to clean light bg-slate-50 background */}
       <main className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-x-hidden">
         {children}
       </main>
