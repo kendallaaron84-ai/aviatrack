@@ -4,7 +4,7 @@ import { FirebaseClientProvider } from "@/firebase/client-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'System Portal',
+  title: '_._',
   description: 'Standard corporate entry application.',
 };
 

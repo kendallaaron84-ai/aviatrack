@@ -48,6 +48,7 @@ export default function RiskClusterDashboard() {
   // Filter Configuration States
   const [importanceFilter, setImportanceFilter] = useState<string>("ALL");
   const [fromDate, setFromDate] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState<string>("ALL");
   const [toDate, setToDate] = useState<string>("");
 
   // Live stream records hook
@@ -67,19 +68,20 @@ export default function RiskClusterDashboard() {
 
   // Comprehensive Date & Importance Filter Engine
   const filteredItems = useMemo(() => {
-    return raidqItems.filter(item => {
-      // 1. Importance Filter
-      if (importanceFilter !== "ALL" && item.importance !== importanceFilter) return false;
+  return raidqItems.filter(item => {
+    if (importanceFilter !== "ALL" && item.importance !== importanceFilter) return false;
 
-      // 2. Calendar Time Horizon Filter
-      if (item.createdAt) {
-        const timestamp = new Date(item.createdAt);
-        if (fromDate && timestamp < new Date(fromDate + "T00:00:00")) return false;
-        if (toDate && timestamp > new Date(toDate + "T23:59:59")) return false;
-      }
-      return true;
-    });
-  }, [raidqItems, importanceFilter, fromDate, toDate]);
+    // 🆕 PROJECT CLASSIFICATION FILTER CHECK
+    if (selectedProject !== "ALL" && (item.projectName || item.projectId) !== selectedProject) return false;
+
+    if (item.createdAt) {
+      const timestamp = new Date(item.createdAt);
+      if (fromDate && timestamp < new Date(fromDate + "T00:00:00")) return false;
+      if (toDate && timestamp > new Date(toDate + "T23:59:59")) return false;
+    }
+    return true;
+  });
+}, [raidqItems, importanceFilter, fromDate, toDate, selectedProject]);
 
   // Compute live contextual counts based on complete backend query snapshot
   const importanceCounts = useMemo(() => {
@@ -263,19 +265,20 @@ export default function RiskClusterDashboard() {
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-6">
         
         <div className="space-y-6">
-          <Card className="rounded-none border-slate-200 bg-white shadow-xs">
-            <CardHeader className="border-b border-slate-100 py-3 bg-slate-50/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <CardTitle className="text-xs font-bold font-mono uppercase tracking-wider text-slate-600 flex items-center gap-2">
-                <Layers className="h-4 w-4 text-slate-400" /> Dynamic Cluster Mapping View
-              </CardTitle>
-              <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono font-bold">
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#EF4444]" /> New</div>
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#1A2D83]" /> Owned</div>
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#883AE1]" /> Mitigated</div>
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#3B82F6]" /> Accepted</div>
-                <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#10B981]" /> Resolved</div>
-              </div>
-            </CardHeader>
+          {selectedItem && (
+            <Card className="rounded-none border-slate-200 bg-white shadow-xs">
+              <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
+                <CardTitle className="text-xs font-bold uppercase tracking-wider text-[#142E88] flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 font-mono">
+                  <span className="truncate max-w-xl">Triage Management Console: {selectedItem.title}</span>
+                  
+                  <div className="flex items-center gap-2 text-[10px] tracking-normal shrink-0">
+                    <span className="bg-[#142E88] text-white px-2 py-0.5 font-sans font-bold rounded-xs">
+                      PROJECT: {selectedItem.projectName || selectedItem.projectId || "UNKNOWN"}
+                    </span>
+                    <span className="text-slate-400">ID Key: {selectedItem.id.slice(0, 8).toUpperCase()}</span>
+                  </div>
+                </CardTitle>
+              </CardHeader>
             <CardContent className="p-6 h-[500px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 20, right: 30, bottom: 35, left: 20 }}>
@@ -354,8 +357,8 @@ export default function RiskClusterDashboard() {
               </ResponsiveContainer>
             </CardContent>
           </Card>
+          )}
 
-          {/* TRIAGE CONSOLE WORKSPACE SECTION */}
           {selectedItem && (
             <Card className="rounded-none border-slate-200 bg-white shadow-xs">
               <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
@@ -527,12 +530,18 @@ export default function RiskClusterDashboard() {
                   <span className="font-bold text-slate-800 truncate max-w-[210px]">{item.title}</span>
                   <span className="h-2 w-2 rounded-full mt-1.5 shrink-0" style={{ backgroundColor: item.nodeColor }} />
                 </div>
-                <div className="flex justify-between items-center text-[10px] text-slate-400">
+
+                {/* 🆕 INJECTED: PROJECT DISPLAY IDENTIFIER BADGE */}
+                <div className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-xs font-sans font-semibold self-start tracking-tight border border-slate-200/60">
+                  📁 {item.projectName || item.projectId || "Unassigned Project"}
+                </div>
+
+                <div className="flex justify-between items-center text-[10px] text-slate-400 pt-0.5">
                   <span>State: <strong className="text-slate-600">{item.roamCategory || "Unassigned"}</strong></span>
                   <span>Impact: <strong className="text-slate-600">{item.importance || "N/A"}</strong></span>
                 </div>
                 {item.owner && (
-                  <div className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-xs self-start font-black">
+                  <div className="text-[9px] bg-blue-900 text-white px-1.5 py-0.5 rounded-xs self-start font-black">
                     Owner: {item.owner}
                   </div>
                 )}
