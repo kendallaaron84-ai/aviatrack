@@ -20,7 +20,13 @@ import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc } f
 // STATIC CONSTANTS (Must be outside the component)
 const TRADE_DIVISIONS = [
   { code: "Div 03", name: "Concrete" },
-  { code: "Div 09", name: "Finishes (Drywall)" },
+  { code: "Div 08", name: "Openings" },
+  { code: "Div 09", name: "Finishes" },
+  { code: "Div 11", name: "Equipment" },
+  { code: "Div 14", name: "Conveying Equipment" },
+  { code: "Div 21", name: "Fire Suppression" },
+  { code: "Div 22", name: "Plumbing" },
+  { code: "Div 23", name: "HVAC & Mech." },
   { code: "Div 26", name: "Electrical" },
   { code: "Div 27", name: "Communications (IT)" },
   { code: "Div 28", name: "Electronic Safety & Security" }
@@ -69,12 +75,12 @@ export default function ObservationWorkbenchPage() {
   
   // Fetch Dynamic Projects from Admin Portal
   useEffect(() => {
-    const qProjects = query(collection(db, "admin_projects")); // Keeping orderBy removed as discussed
+    const qProjects = query(collection(db, "admin_projects"));
     const unsubProjects = onSnapshot(qProjects, (snapshot) => {
       const projects = snapshot.docs.map(d => ({
         id: d.id,
-        name: d.data().name || "Unnamed Project",       // Changed from projectName to name
-        track: d.data().program || "Unknown Track",     // Changed from programTrack to program
+        name: d.data().name || "Unnamed Project",
+        track: d.data().program || "Unknown Track",
         budget: d.data().budget || 0
       }));
       setAvailableProjects(projects);
@@ -279,6 +285,7 @@ export default function ObservationWorkbenchPage() {
   const handleAddMilestone = (type: "Construction" | "IT") => setMilestones([...milestones, { id: crypto.randomUUID(), type, name: "", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }]);
   const updateMilestone = (id: string, field: string, value: string) => setMilestones(milestones.map(m => m.id === id ? { ...m, [field]: value } : m));
   const removeMilestone = (id: string) => setMilestones(milestones.filter(m => m.id !== id));
+  
   const handleAddDependency = () => setDependencies([...dependencies, { id: crypto.randomUUID(), type: "Trade", targetEntity: "", tradeDivision: "", linkedMilestone: "", activityTask: "", status: "Active Block" }]);
   const updateDependency = (id: string, field: string, value: string) => setDependencies(dependencies.map(d => d.id === id ? { ...d, [field]: value } : d));
   const removeDependency = (id: string) => setDependencies(dependencies.filter(d => d.id !== id));
@@ -501,7 +508,19 @@ export default function ObservationWorkbenchPage() {
               <TableBody>
                 {dependencies.map((d) => (
                   <TableRow key={d.id} className="hover:bg-slate-50/50">
-                    <TableCell><select value={d.type} onChange={e => { updateDependency(d.id, "type", e.target.value); if(e.target.value === 'Cross-Project') updateDependency(d.id, "tradeDivision", ""); }} className={`h-8 border rounded-sm text-[10px] px-1 w-24 font-bold ${d.type === 'Cross-Project' ? 'bg-purple-50 text-purple-800 border-purple-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}><option value="Cross-Project">Cross-Project</option><option value="Trade">Trade Base</option></select></TableCell>
+                    <TableCell>
+                      <select 
+                        value={d.type || "Trade"} 
+                        onChange={e => { 
+                          updateDependency(d.id, "type", e.target.value); 
+                          if(e.target.value === 'Cross-Project') updateDependency(d.id, "tradeDivision", ""); 
+                        }} 
+                        className={`h-8 border rounded-sm text-[10px] px-1 w-24 font-bold ${d.type === 'Cross-Project' ? 'bg-purple-50 text-purple-800 border-purple-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}
+                      >
+                        <option value="Cross-Project">Cross-Project</option>
+                        <option value="Trade">Trade Base</option>
+                      </select>
+                    </TableCell>
                     <TableCell><Input value={d.targetEntity} onChange={e => updateDependency(d.id, "targetEntity", e.target.value)} placeholder={d.type === 'Cross-Project' ? "e.g. Terminal C" : "e.g. Mechanical Contractor"} className="h-8 text-xs bg-white" /></TableCell>
                     <TableCell>{d.type === "Trade" ? (<select value={d.tradeDivision || ""} onChange={e => updateDependency(d.id, "tradeDivision", e.target.value)} className="h-8 border border-slate-200 rounded-sm text-[10px] px-1.5 w-full bg-white font-semibold text-slate-700"><option value="">Select Division...</option>{TRADE_DIVISIONS.map(div => <option key={div.code} value={div.code}>{div.code} - {div.name}</option>)}</select>) : (<span className="text-[10px] text-slate-400 font-mono italic pl-2">N/A (Cross-Proj)</span>)}</TableCell>
                     <TableCell><Input value={d.activityTask} onChange={e => updateDependency(d.id, "activityTask", e.target.value)} placeholder="e.g. Cable Pulling" className="h-8 text-xs bg-white" /></TableCell>
@@ -629,7 +648,8 @@ export default function ObservationWorkbenchPage() {
           </div>
         </div>
       )}
-  {/* HISTORICAL SNAPSHOT READ-ONLY MODAL */}
+
+      {/* HISTORICAL SNAPSHOT READ-ONLY MODAL */}
       {viewingSnapshot && (
         <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-md shadow-2xl w-full max-w-4xl flex flex-col relative overflow-hidden">
@@ -683,7 +703,7 @@ export default function ObservationWorkbenchPage() {
 
                 <div>
                   <span className="block text-xs font-bold text-slate-800 mb-2 border-b pb-1 flex items-center gap-1.5"><Clock className="h-3.5 w-3.5 text-[#142E88]" /> Action Items Required</span>
-                  <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.actionItems || "No action items requested."}</p>
+                  <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{viewingSnapshot.resolutionPlan || "No action items requested."}</p>
                 </div>
               </div>
             </div>
