@@ -1,5 +1,5 @@
 // File: src/app/dashboard/workbench/raid/page.tsx
-"use client\"
+"use client";
 
 import { useState, useEffect } from "react";
 import { db } from "@/lib/firebase";
