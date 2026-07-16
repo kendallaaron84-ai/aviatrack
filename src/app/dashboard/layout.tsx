@@ -1,7 +1,7 @@
 // File: src/app/dashboard/layout.tsx
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { 
@@ -32,19 +32,37 @@ import { initiateGoogleSignIn } from "@/firebase/non-blocking-login";
 import { Button } from "@/components/ui/button";
 import { auth, db } from "@/lib/firebase";
 
+// 👥 SYSTEM REGISTRY TO LINK LOGGED-IN EMAILS TO SYSTEM HANDLES
+const PROJECT_TEAM = [
+  { name: "Kendall Aaron", email: "kendallaaron84@gmail.com", handle: "kendall", role: "Program Manager" },
+  { name: "Kassaundra Salinas", email: "kassaundra.salinas@sanantonio.gov", handle: "kassie", role: "Project Manager" },
+  { name: "Lejandro Ligeralde", email: "lejandro.ligeralde@sanantonio.gov", handle: "lejandro", role: "Project Manager" },
+  { name: "Ytevia Watts", email: "ytevia.watts@sanantonio.gov", handle: "ytevia", role: "Portfolio Manager" },
+  { name: "John Perez", email: "john.perez2@sanantonio.gov", handle: "john", role: "IT Physical Security Specialist" },
+  { name: "Ricardo Briseno", email: "ricardo.briseno@sanantonio.gov", handle: "ricardo", role: "Network Engineer" },
+  { name: "Andrew Jaffee", email: "andrew.jafee@sanantonio.gov", handle: "andrew", role: "Sr. IT Network Manager" }
+];
+
 export function GlobalHeaderNotificationHub() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const currentUserEmail = auth.currentUser?.email || "";
-  const username = currentUserEmail.split("@")[0].toLowerCase();
+  
+  // 🧠 FIX: Translate crude email prefix to official system mention handle
+  const systemHandle = useMemo(() => {
+    if (!currentUserEmail) return "";
+    const matched = PROJECT_TEAM.find(u => u.email.toLowerCase() === currentUserEmail.toLowerCase());
+    return matched ? matched.handle : currentUserEmail.split("@")[0].toLowerCase();
+  }, [currentUserEmail]);
   
   useEffect(() => {
-    if (!currentUserEmail) return;
+    if (!currentUserEmail || !systemHandle) return;
 
+    // Queries real-time updates using the clean unified database tag identifier
     const q = query(
       collectionGroup(db, "portfolio_questions"),
       where("mentionFlag", "==", true),
-      where("notifiedTarget", "==", username)
+      where("notifiedTarget", "==", systemHandle)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -68,7 +86,7 @@ export function GlobalHeaderNotificationHub() {
     });
 
     return () => unsubscribe();
-  }, [currentUserEmail, username]);
+  }, [currentUserEmail, systemHandle]);
 
   const handleNotificationClick = async (docPath: string) => {
     try {
@@ -96,12 +114,20 @@ export function GlobalHeaderNotificationHub() {
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 md:left-auto md:right-0 mt-2 w-72 bg-white border border-slate-200 shadow-xl rounded-sm z-50 overflow-hidden font-sans text-slate-900">
+            <div className="absolute left-0 md:left-auto md:right-0 md:translate-x-[50px] mt-2 w-72 bg-white border border-slate-200 shadow-xl rounded-sm z-50 overflow-hidden font-sans text-slate-900 animate-in fade-in slide-in-from-top-2">
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
             <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">System Alerts</span>
-            <span className="text-[9px] bg-blue-50 text-[#142E88] px-1.5 py-0.5 rounded-xs font-mono font-bold">
-              {unreadCount} New
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] bg-blue-50 text-[#142E88] px-1.5 py-0.5 rounded-xs font-mono font-bold">
+                {unreadCount} New
+              </span>
+              <button 
+                onClick={() => setIsOpen(false)} 
+                className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer transition-colors"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
           </div>
 
           <div className="divide-y divide-slate-100 max-h-[260px] overflow-y-auto">

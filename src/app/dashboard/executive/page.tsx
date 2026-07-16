@@ -59,9 +59,30 @@ export default function AviationExecutiveControlRoom() {
   const [workbenchStates, setWorkbenchStates] = useState<any[]>([]);
   const [raidItems, setRaidItems] = useState<any[]>([]);
   
-  // Timeline Zoom & Pan States
-  const [zoomQuarters, setZoomQuarters] = useState<number>(40);
-  const [panOffset, setPanOffset] = useState<number>(0);
+  // 📆 ENHANCEMENT 1: CALENDAR WINDOW INITIALIZATION ENGINE
+  const [calendarBounds, setCalendarBounds] = useState(() => {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth(); // 0-indexed
+    
+    // Determine the precise calendar start window of the current quarter
+    let startQuarterMonth = 0;
+    if (currentMonth >= 3 && currentMonth <= 5) startQuarterMonth = 3;
+    else if (currentMonth >= 6 && currentMonth <= 8) startQuarterMonth = 6;
+    else if (currentMonth >= 9 && currentMonth <= 11) startQuarterMonth = 9;
+    
+    const startObj = new Date(currentYear, startQuarterMonth, 1);
+    
+    // Default dynamic view boundary limit: Current Quarter + 2 extended quarters (9 months absolute offset)
+    const endObj = new Date(startObj.getTime());
+    endObj.setMonth(endObj.getMonth() + 9);
+    endObj.setDate(endObj.getDate() - 1); // Clamp to final day of the range
+    
+    return {
+      startDateStr: startObj.toISOString().split('T')[0],
+      endDateStr: endObj.toISOString().split('T')[0]
+    };
+  });
   
   // Global Historical Reports State
   const [globalReports, setGlobalReports] = useState<any[]>([]);
@@ -163,46 +184,26 @@ export default function AviationExecutiveControlRoom() {
     return { activeMilestones: milestones, activeDependenciesList: deps };
   }, [workbenchStates, activeProjectIds]);
 
-  // 🟢 TIMELINE DATE PROJECTION WINDOW (ZOOM & PAN)
+  // 🟢 CALENDAR TIMELINE DATE PROJECTION WINDOW WINDOW (CALENDAR BINDING MODULE)
   const timelineWindow = useMemo(() => {
-    const baseStart = new Date("2023-01-01");
-    
-    const startOffsetMonths = panOffset * 3;
-    const endOffsetMonths = (panOffset + zoomQuarters) * 3;
-    
-    const startDate = new Date(baseStart.getTime());
-    startDate.setMonth(startDate.getMonth() + startOffsetMonths);
-    
-    const endDate = new Date(baseStart.getTime());
-    endDate.setMonth(endDate.getMonth() + endOffsetMonths);
-    
-    const minTime = startDate.getTime();
-    const maxTime = endDate.getTime();
-    
-    const getQuarterLabel = (quarterIndex: number) => {
-      const year = 2023 + Math.floor(quarterIndex / 4);
-      const q = (quarterIndex % 4) + 1;
-      return `Q${q} ${year}`;
-    };
-    
-    const startLabel = getQuarterLabel(panOffset);
-    const endLabel = getQuarterLabel(panOffset + zoomQuarters - 1);
+    const minTime = new Date(calendarBounds.startDateStr).getTime();
+    const maxTime = new Date(calendarBounds.endDateStr).getTime();
     
     return {
       minTime,
       maxTime,
-      startLabel,
-      endLabel
+      startLabel: new Date(calendarBounds.startDateStr).toLocaleDateString(undefined, { year: 'numeric', quarter: 'short' } as any) || calendarBounds.startDateStr,
+      endLabel: new Date(calendarBounds.endDateStr).toLocaleDateString(undefined, { year: 'numeric', quarter: 'short' } as any) || calendarBounds.endDateStr
     };
-  }, [zoomQuarters, panOffset]);
+  }, [calendarBounds]);
 
-  // Constraint 2: Reactive coordinate projection helper wrapped in standard React useMemo hook
+  // Reactive coordinate chart projection tool running on precise calendar timelines
   const getPos = useMemo(() => {
     const { minTime, maxTime } = timelineWindow;
     return (dateStr: string) => {
       if (!dateStr) return -10;
       const t = new Date(dateStr).getTime();
-      if (t < minTime || t > maxTime) return -100; // flag off-screen milestones
+      if (t < minTime || t > maxTime) return -100; // flag off-screen milestone markers cleanly
       return Math.max(0, Math.min(100, ((t - minTime) / (maxTime - minTime)) * 100));
     };
   }, [timelineWindow]);
@@ -229,71 +230,25 @@ export default function AviationExecutiveControlRoom() {
 
   const activeDependenciesCount = constructionDependenciesCount;
 
-  // 🟢 5. DYNAMIC S-CURVE GENERATION WITH ACCURATE HORIZONS & SMOOTHSTEP INTERPOLATION
+  // 🟢 5. DYNAMIC S-CURVE GENERATION ALIGNED WITH ACTIVE CALENDAR HORIZONS
   const dynamicSCurveData = useMemo(() => {
-    const startYear = 2023;
-    let endYear = 2032; // Default limit
+    // 🧮 Extract chronological bounds straight out of the active calendar widget selection
+    const startYear = new Date(calendarBounds.startDateStr).getFullYear() || 2024;
+    const endYear = new Date(calendarBounds.endDateStr).getFullYear() || 2027;
     
     const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
     
-    if (activeProjectIds.length === 1 && activeStates.length > 0) {
-      const state = activeStates[0];
-      const milestones = state.milestones || [];
-      
-      if (milestones.length > 0) {
-        const allHaveBaselineEnd = milestones.every((m: any) => m.baselineEnd && m.baselineEnd.trim() !== "");
-        
-        let targetDateStr = "";
-        if (allHaveBaselineEnd) {
-          const forecastDates = milestones.map((m: any) => m.forecastEnd).filter((d: string) => d && d.trim() !== "");
-          if (forecastDates.length > 0) {
-            targetDateStr = forecastDates.reduce((max: string, curr: string) => curr > max ? curr : max);
-          }
-        } else {
-          const baselineDates = milestones.map((m: any) => m.baselineEnd).filter((d: string) => d && d.trim() !== "");
-          if (baselineDates.length > 0) {
-            targetDateStr = baselineDates.reduce((max: string, curr: string) => curr > max ? curr : max);
-          }
-        }
-        
-        if (targetDateStr) {
-          const parsedYear = new Date(targetDateStr).getFullYear();
-          if (!isNaN(parsedYear) && parsedYear >= 2023) {
-            endYear = parsedYear;
-          }
-        }
-      }
-    } else {
-      // All Portfolio view: use max baselineEnd across all project states
-      let latestBaselineDateStr = "";
-      activeStates.forEach(s => {
-        const milestones = s.milestones || [];
-        milestones.forEach((m: any) => {
-          if (m.baselineEnd && m.baselineEnd.trim() !== "") {
-            if (!latestBaselineDateStr || m.baselineEnd > latestBaselineDateStr) {
-              latestBaselineDateStr = m.baselineEnd;
-            }
-          }
-        });
-      });
-      
-      if (latestBaselineDateStr) {
-         const parsedYear = new Date(latestBaselineDateStr).getFullYear();
-         if (!isNaN(parsedYear) && parsedYear >= 2023) {
-           endYear = parsedYear;
-         }
-      }
-    }
-    
-    endYear = Math.max(2023, Math.min(2035, endYear));
-    
     const points = [];
-    const totalYears = endYear - startYear;
+    const totalYears = Math.max(1, endYear - startYear);
     
     for (let y = startYear; y <= endYear; y++) {
-      const t = totalYears === 0 ? 1 : (y - startYear) / totalYears;
-      const smoothT = 3 * t * t - 2 * t * t * t; // Smoothstep S-curve cumulative curve
-      const factor = 0.044 + 0.956 * smoothT;
+      const t = (y - startYear) / totalYears;
+      
+      // Smoothstep S-curve cumulative curve interpolation ($3t^2 - 2t^3$)
+      const smoothT = 3 * t * t - 2 * t * t * t; 
+      
+      // Establishes a scaling factor to cleanly transition curve values across custom viewport ranges
+      const factor = 0.05 + 0.95 * smoothT;
       
       points.push({
         targetDate: `${y}`,
@@ -303,7 +258,7 @@ export default function AviationExecutiveControlRoom() {
     }
     
     return points;
-  }, [workbenchStates, activeProjectIds, totalBudget, totalActuals]);
+  }, [workbenchStates, activeProjectIds, totalBudget, totalActuals, calendarBounds]);
 
   // 🟢 6. DYNAMIC ACTIVE THREAT FILTERING (RAID MATRIX COUPLING)
   const dynamicRisks = useMemo(() => {
@@ -501,58 +456,119 @@ export default function AviationExecutiveControlRoom() {
         </CardContent>
       </Card>
 
-      {/* DYNAMIC PORTFOLIO TIMELINE (3 RAILS) */}
+      {/* DYNAMIC PORTFOLIO TIMELINE (GANTT PHASES + NESTED MILESTONES) */}
       <Card className="border-slate-200 shadow-sm rounded-sm bg-white mt-6">
         <CardHeader className="bg-slate-50 border-b py-3 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
               <Activity className="h-4 w-4 text-[#142E88]" /> Dynamic Portfolio Timeline
             </CardTitle>
-            <CardDescription className="text-[11px]">Real-time milestone and dependency mapping mapped directly from active PM Workbenches.</CardDescription>
+            <CardDescription className="text-[11px]">Real-time spatial phase bars and trade milestone nodes synced from PM Workbenches.</CardDescription>
           </div>
           
-          {/* SLIDER CONTROLS */}
-          <div className="flex flex-wrap items-center gap-4 bg-white p-2 border border-slate-200 shadow-xs text-xs font-semibold rounded-sm">
+          {/* 🆕 ENHANCEMENT 1: DYNAMIC PORTFOLIO CALENDAR BINDING WIDGET */}
+          <div className="flex flex-wrap items-center gap-3 bg-white p-2 border border-slate-200 shadow-xs text-xs font-semibold rounded-sm">
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Zoom Quarters:</span>
+              <label className="text-slate-500 font-mono text-[10px] uppercase font-bold">Start Window:</label>
               <input 
-                type="range" 
-                min="1" 
-                max="40" 
-                value={zoomQuarters} 
-                onChange={(e) => {
-                  const val = parseInt(e.target.value);
-                  setZoomQuarters(val);
-                  if (panOffset + val > 40) {
-                    setPanOffset(40 - val);
-                  }
-                }}
-                className="w-20 accent-[#142E88] h-1 bg-slate-200 rounded-lg cursor-pointer"
+                type="date"
+                value={calendarBounds.startDateStr}
+                onChange={(e) => setCalendarBounds(prev => ({ ...prev, startDateStr: e.target.value }))}
+                className="border rounded px-2 py-1 bg-white text-slate-900 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
               />
-              <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px] text-slate-700">{zoomQuarters}Q</span>
+            </div>
+            
+            <div className="flex items-center gap-1.5">
+              <label className="text-slate-500 font-mono text-[10px] uppercase font-bold">End Horizon:</label>
+              <input 
+                type="date"
+                value={calendarBounds.endDateStr}
+                onChange={(e) => setCalendarBounds(prev => ({ ...prev, endDateStr: e.target.value }))}
+                className="border rounded px-2 py-1 bg-white text-slate-900 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              />
             </div>
 
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-500 font-mono text-[10px] uppercase font-bold">Pan Offset:</span>
-              <input 
-                type="range" 
-                min="0" 
-                max={40 - zoomQuarters} 
-                value={panOffset} 
-                onChange={(e) => setPanOffset(parseInt(e.target.value))}
-                className="w-20 accent-[#142E88] h-1 bg-slate-200 rounded-lg cursor-pointer"
-                disabled={zoomQuarters === 40}
-              />
-              <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px] text-slate-700">{panOffset}Q</span>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[10px] font-mono font-bold text-slate-400 hover:text-slate-600 px-2 cursor-pointer"
+              onClick={() => {
+                const today = new Date();
+                let startQuarterMonth = 0;
+                if (today.getMonth() >= 3 && today.getMonth() <= 5) startQuarterMonth = 3;
+                else if (today.getMonth() >= 6 && today.getMonth() <= 8) startQuarterMonth = 6;
+                else if (today.getMonth() >= 9 && today.getMonth() <= 11) startQuarterMonth = 9;
+                
+                const startObj = new Date(today.getFullYear(), startQuarterMonth, 1);
+                const endObj = new Date(startObj.getTime());
+                endObj.setMonth(endObj.getMonth() + 9);
+                endObj.setDate(endObj.getDate() - 1);
+
+                setCalendarBounds({
+                  startDateStr: startObj.toISOString().split('T')[0],
+                  endDateStr: endObj.toISOString().split('T')[0]
+                });
+              }}
+            >
+              🔄 Reset Default
+            </Button>
           </div>
         </CardHeader>
-        <CardContent className="p-6 space-y-8 relative overflow-hidden">
-          <div className="absolute inset-x-6 top-2 flex justify-between text-[10px] font-mono font-black text-slate-400">
+        
+        {/* 🪲 BUG 3 DISMISS CLIPPING: Extended bottom space and allowed tooltip overflow visibility */}
+        <CardContent className="p-6 pb-32 space-y-8 relative overflow-visible">
+          
+          {/* Timeline Horizon Boundary Labels */}
+          <div className="absolute inset-x-6 top-2 flex justify-between text-[10px] font-mono font-black text-slate-400 z-30">
             <span className="text-[#142E88] font-bold">{timelineWindow.startLabel}</span>
             <span className="text-slate-400 font-normal">Zoom Window Bounds</span>
             <span className="text-[#142E88] font-bold">{timelineWindow.endLabel}</span>
           </div>
+
+          {/* 🆕 DYNAMIC BACKGROUND TIMELINE GRID LINES ENGINE */}
+          <div className="absolute inset-x-6 top-10 bottom-10 pointer-events-none flex justify-between z-0">
+            {(() => {
+              const start = new Date(calendarBounds.startDateStr);
+              const end = new Date(calendarBounds.endDateStr);
+              
+              const totalDays = Math.max(1, (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+              
+              const lineCount = 4;
+              const intervals = [];
+              
+              for (let i = 0; i <= lineCount; i++) {
+                const targetFactor = i / lineCount;
+                const incrementalDate = new Date(start.getTime() + (totalDays * targetFactor * 24 * 60 * 60 * 1000));
+                
+                const displayLabel = incrementalDate.toLocaleDateString(undefined, { 
+                  month: 'short', 
+                  year: 'numeric' // Swapped to full year to make it even easier to read
+                });
+                
+                intervals.push({
+                  positionPercent: targetFactor * 100,
+                  label: displayLabel
+                });
+              }
+
+              return intervals.map((item, idx) => (
+                <div 
+                  key={`grid-line-${idx}`} 
+                  className="absolute top-0 bottom-0 flex flex-col items-center h-full"
+                  style={{ left: `${item.positionPercent}%`, transform: 'translateX(-50%)' }}
+                >
+                  {/* Hardened vertical column alignment marker (slightly darker border for visibility) */}
+                  <div className="h-full border-l border-dashed border-slate-300 w-px" />
+                  
+                  {/* 👓 ACCESSIBILITY FIX: Larger text, bold weight, and crisp light charcoal gray background */}
+                  <span className="text-xs font-mono font-black text-white bg-slate-700 px-2 py-1 rounded shadow-md mt-2 border border-slate-800 tracking-wide z-10">
+                    {item.label}
+                  </span>
+                </div>
+              ));
+            })()}
+          </div>
+
           {(() => {
             const tdpMilestones = activeMilestones.filter(m => {
               const proj = allProjects.find(p => p.id === m.projectId);
@@ -583,8 +599,9 @@ export default function AviationExecutiveControlRoom() {
 
                       return (
                         <div key={`tdp-${i}`} className="group/milestone absolute h-3.5 w-3.5 rounded-full bg-blue-600 border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30" style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
-                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
-                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                          {/* 🪲 BUG 3 DISMISS CLIPPING: Changed from bottom-full to top-full to drop downward */}
+                          <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
+                            <div className="flex items-center justify-between border-b border-slate-700 pb-1">
                                <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{m.projectId}</span>
                                <span className="bg-slate-800 text-slate-300 font-bold px-1 py-0.5 rounded text-[9px] uppercase font-sans">{m.status}</span>
                              </div>
@@ -628,7 +645,8 @@ export default function AviationExecutiveControlRoom() {
 
                       return (
                         <div key={`dep-${i}`} className={`group/milestone absolute h-3.5 w-3.5 rounded-sm border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30 ${dep.status === 'Active Block' ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
-                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
+                          {/* 🪲 BUG 3 DISMISS CLIPPING: Pushed tooltip layout down */}
+                          <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
                              <div className="flex items-center justify-between border-b border-slate-700 pb-1">
                                <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{dep.projectId}</span>
                                <span className={`font-bold px-1.5 py-0.5 rounded text-[9px] uppercase font-sans ${dep.status === 'Active Block' ? 'bg-red-950 text-red-400' : 'bg-emerald-950 text-emerald-400'}`}>{dep.status}</span>
@@ -725,13 +743,13 @@ export default function AviationExecutiveControlRoom() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {activeMilestones.map((m: any, i) => {
-                    const variance = calculateVarianceDays(m.baselineEnd, m.forecastEnd);
+                  {workbenchStates.flatMap(s => (s.milestones || []).map((m: any) => ({ ...m, projectId: s.id }))).map((m: any, i) => {
+                    const variance = calculateVarianceDays(m.baselineEndDate, m.forecastEndDate);
                     return (
                       <TableRow key={i} className="hover:bg-slate-50/50">
                         <TableCell className="text-xs font-bold text-[#142E88] font-mono">{m.projectId}</TableCell>
-                        <TableCell className="text-xs font-semibold">{m.name}</TableCell>
-                        <TableCell className="text-[10px] font-mono">{m.forecastEnd || "N/A"}</TableCell>
+                        <TableCell className="text-xs font-semibold">{m.tradeMilestone || m.name}</TableCell>
+                        <TableCell className="text-[10px] font-mono">{m.forecastEndDate || "N/A"}</TableCell>
                         <TableCell><span className={`text-[10px] font-bold font-mono ${variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
                         <TableCell><Badge variant="outline" className="text-[9px] shadow-none bg-white">{m.status}</Badge></TableCell>
                       </TableRow>
@@ -785,7 +803,15 @@ export default function AviationExecutiveControlRoom() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={dynamicSCurveData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="targetDate" stroke="#94a3b8" style={{ fontSize: '11px', fontFamily: 'monospace', fontWeight: 'bold' }} />
+                <XAxis 
+                  dataKey="targetDate" 
+                  stroke="#334155" // Darkened to slate-700 for clear line resolution
+                  style={{ 
+                    fontSize: '13px', // Increased size so the boss can read the years easily
+                    fontFamily: 'monospace', 
+                    fontWeight: '900' // Bunted weight to maximum crispness
+                  }} 
+                />
                 <YAxis stroke="#94a3b8" style={{ fontSize: '11px', fontFamily: 'monospace' }} tickFormatter={(val) => `$${(val / 1000000).toFixed(1)}M`} />
                 <Tooltip formatter={(value: any) => [`$${value.toLocaleString(undefined, {maximumFractionDigits: 0})}`, '']} />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />

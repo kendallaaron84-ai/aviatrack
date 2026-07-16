@@ -1,7 +1,7 @@
 // File: src/app/dashboard/review/[id]/page.tsx
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,12 +15,37 @@ import { Paperclip, MessageSquare, Send, ShieldAlert, Image as ImageIcon, FileTe
 import { db, auth } from "@/lib/firebase";
 
 // Native Firebase Transactions
-import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
 
 export default function ReviewObservationPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = React.use(params);
   const router = useRouter();
   const { toast } = useToast();
+
+  // 👥 REAL ENTERPRISE TEAM DIRECTORY PIPED FROM SECURITY REGISTRY
+  const PROJECT_TEAM = [
+    { name: "Kendall Aaron", email: "kendallaaron84@gmail.com", handle: "kendall", role: "Program Manager" },
+    { name: "Kassaundra Salinas", email: "kassaundra.salinas@sanantonio.gov", handle: "kassie", role: "Project Manager" },
+    { name: "Lejandro Ligeralde", email: "lejandro.ligeralde@sanantonio.gov", handle: "lejandro", role: "Project Manager" },
+    { name: "Ytevia Watts", email: "ytevia.watts@sanantonio.gov", handle: "ytevia", role: "Portfolio Manager" },
+    { name: "John Perez", email: "john.perez2@sanantonio.gov", handle: "john", role: "IT Physical Security Specialist" },
+    { name: "Ricardo Briseno", email: "ricardo.briseno@sanantonio.gov", handle: "ricardo", role: "Network Engineer" },
+    { name: "Andrew Jaffee", email: "andrew.jafee@sanantonio.gov", handle: "andrew", role: "Sr. IT Network Manager" }
+  ];
+
+  // 📡 INDEPENDENT STATES FOR CHAT MENTION SUGGESTIONS ENGINE
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [mentionSearch, setMentionSearch] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // Filter team elements matching character inputs dynamically
+  const filteredTeam = useMemo(() => {
+    if (!mentionSearch) return PROJECT_TEAM;
+    return PROJECT_TEAM.filter(user => 
+      user.name.toLowerCase().includes(mentionSearch.toLowerCase()) ||
+      user.handle.toLowerCase().includes(mentionSearch.toLowerCase())
+    );
+  }, [mentionSearch]);
     
   // Master Core States
   const [obs, setObs] = useState<any>(null);
@@ -199,27 +224,69 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       const currentUser = auth.currentUser?.email || "Project Manager";
       const timestamp = new Date().toISOString();
       let isMentionTriggered = false;
-      let targetUserEmail = "";
+      let targetUserTag = "";
 
-      if (portfolioQuestion.includes("@")) {
+      // 1. 🔍 RESOLUTION ENGINE: Scan text directly for full names inserted by the autocomplete UI
+      const mentionedUser = PROJECT_TEAM.find(user => portfolioQuestion.includes(`@${user.name}`));
+
+      if (mentionedUser) {
+        isMentionTriggered = true;
+        targetUserTag = mentionedUser.handle; // Maps full name directly to real handle (e.g., "kassie")
+      } else if (portfolioQuestion.includes("@")) {
+        // Fallback legacy behavior in case a user types a raw short handle manually
         const parts = portfolioQuestion.split("@");
         if (parts[1]) {
           isMentionTriggered = true;
-          targetUserEmail = parts[1].split(" ")[0]; 
+          targetUserTag = parts[1].split(" ")[0].trim();
         }
       }
 
+      // 2. Log the comment directly to the active field observation feed
       await addDoc(collection(db, "field_observations", id, "portfolio_questions"), {
         text: portfolioQuestion,
         author: currentUser,
         createdAt: timestamp,
         mentionFlag: isMentionTriggered,
-        notifiedTarget: targetUserEmail
+        notifiedTarget: targetUserTag
       });
 
+      // 3. 🔔 RELIABLE NOTIFICATION DISPATCHER
+      if (isMentionTriggered && targetUserTag) {
+        const usersRef = collection(db, "users");
+        let targetUserId = null;
+
+        // Route A: Search by unique database username index
+        const qUser = query(usersRef, where("username", "==", targetUserTag.toLowerCase()));
+        const userSnap = await getDocs(qUser);
+
+        if (!userSnap.empty) {
+          targetUserId = userSnap.docs[0].id;
+        } else if (mentionedUser) {
+          // Route B Fallback: Look up by enterprise email registry to catch missing handles
+          const qEmail = query(usersRef, where("email", "==", mentionedUser.email));
+          const emailSnap = await getDocs(qEmail);
+          if (!emailSnap.empty) {
+            targetUserId = emailSnap.docs[0].id;
+          }
+        }
+
+        // If a valid target document profile anchor exists, ring the alert bell icon
+        if (targetUserId) {
+          await addDoc(collection(db, "users", targetUserId, "notifications"), {
+            type: "mention",
+            projectId: obs?.projectId || "Unknown Project",
+            projectName: obs?.projectName || "Field Observation Alert",
+            messageSummary: portfolioQuestion.slice(0, 100),
+            timestamp,
+            isRead: false
+          });
+        }
+      }
+
       setPortfolioQuestion("");
-      toast({ title: "Comment Transmitted", description: "Message logged to project timeline feed." });
-    } catch (e) {
+      toast({ title: "Comment Transmitted", description: "Message logged and notification pushed to target user." });
+    } catch (error) {
+      console.error("Mention routing failure:", error);
       toast({ variant: "destructive", title: "Error", description: "Failed to log comment." });
     }
   };
@@ -528,6 +595,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
           </div>
         </div>
 
+        {/* Scrolling Message History Log Feed */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
           {portfolioQuestionsFeed.length === 0 ? (
             <div className="text-center text-slate-400 pt-12 italic">
@@ -548,17 +616,91 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
           )}
         </div>
 
-        <form onSubmit={submitPortfolioQuestion} className="p-3 border-t bg-white flex items-center gap-1.5">
-          <Input 
-            value={portfolioQuestion}
-            onChange={e => setPortfolioQuestion(e.target.value)}
-            placeholder="Type comment or @email here..."
-            className="h-8 text-xs border-slate-200 shadow-none focus-visible:ring-1 focus-visible:ring-[#3c38d4] rounded-sm bg-white"
-          />
-          <Button type="submit" size="sm" className="bg-[#3c38d4] hover:bg-[#2b27b5] h-8 w-8 p-0 rounded-sm shrink-0 cursor-pointer">
-            <Send className="h-3 w-3 text-white" />
-          </Button>
-        </form>
+        {/* 🆕 AUTOCOMPLETE DROP-DOWN SELECTION BOX & INPUT CONTROLS */}
+        <div className="p-3 border-t bg-white relative">
+          {showDropdown && filteredTeam.length > 0 && (
+            <div className="absolute bottom-full mb-2 left-2 right-2 bg-slate-900 border border-slate-700 text-white rounded shadow-xl overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-100">
+              <div className="px-2.5 py-1 bg-slate-800 text-[9px] font-mono font-black uppercase text-slate-400 border-b border-slate-700 tracking-wider">
+                Project Core Directory Mentions
+              </div>
+              <ul className="max-h-40 overflow-y-auto divide-y divide-slate-800">
+                {filteredTeam.map((user, idx) => {
+                  const isCurrent = idx === selectedIndex;
+                  return (
+                    <li
+                      key={user.email}
+                      onClick={() => {
+                        const words = portfolioQuestion.split(" ");
+                        words.pop(); // Remove the partial text token (like "@k")
+                        setPortfolioQuestion([...words, `@${user.name} `].join(" "));
+                        setShowDropdown(false);
+                      }}
+                      className={`px-3 py-1.5 text-xs flex flex-col cursor-pointer transition-colors ${
+                        isCurrent ? "bg-[#3c38d4] text-white" : "hover:bg-slate-800/60 text-slate-200"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold">
+                        <span>{user.name}</span>
+                        <span className="text-[8px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-sans uppercase">
+                          {user.role}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          <form 
+            onSubmit={submitPortfolioQuestion} 
+            className="flex items-center gap-1.5"
+            onKeyDown={(e) => {
+              if (showDropdown && filteredTeam.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSelectedIndex((prev) => (prev + 1) % filteredTeam.length);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSelectedIndex((prev) => (prev - 1 + filteredTeam.length) % filteredTeam.length);
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const words = portfolioQuestion.split(" ");
+                  words.pop(); // Remove the typed filter tag
+                  setPortfolioQuestion([...words, `@${filteredTeam[selectedIndex].name} `].join(" "));
+                  setShowDropdown(false);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setShowDropdown(false);
+                }
+              }
+            }}
+          >
+            <Input 
+              value={portfolioQuestion}
+              onChange={(e) => {
+                const text = e.target.value;
+                setPortfolioQuestion(text);
+                
+                const words = text.split(" ");
+                const lastWord = words[words.length - 1];
+                
+                if (lastWord && lastWord.startsWith("@")) {
+                  setShowDropdown(true);
+                  setMentionSearch(lastWord.slice(1));
+                  setSelectedIndex(0);
+                } else {
+                  setShowDropdown(false);
+                }
+              }}
+              placeholder="Type comment... use @ to mention team members"
+              className="h-8 text-xs border-slate-200 shadow-none focus-visible:ring-1 focus-visible:ring-[#3c38d4] rounded-sm bg-white"
+            />
+            <Button type="submit" size="sm" className="bg-[#3c38d4] hover:bg-[#2b27b5] h-8 w-8 p-0 rounded-sm shrink-0 cursor-pointer">
+              <Send className="h-3 w-3 text-white" />
+            </Button>
+          </form>
+        </div>
       </Card>
 
       {/* Full Screen Lightbox Modal Canvas overlay */}

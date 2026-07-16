@@ -15,7 +15,7 @@ import {
   Download, Paperclip, Sparkles, AlertTriangle, Activity, History 
 } from "lucide-react";
 import { db, auth } from "@/lib/firebase"; 
-import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc, getDocs } from "firebase/firestore";
 
 // STATIC CONSTANTS (Must be outside the component)
 const TRADE_DIVISIONS = [
@@ -62,6 +62,9 @@ export default function ObservationWorkbenchPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [reportForm, setReportForm] = useState({ periodStart: "", periodEnd: "", lookAhead: "", risks: "", impact: "", resolutionPlan: "", actionItems: "" });
   const [viewingSnapshot, setViewingSnapshot] = useState<any>(null);
+  
+  // 🆕 BUG FIX: Independent state for context trade editor to resolve modal collision
+  const [editingMilestone, setEditingMilestone] = useState<any>(null);
 
   // Fallback for active project data
   const activeProjectData = availableProjects.find(p => p.id === selectedProject) || { name: "Loading...", budget: 0 };
@@ -69,10 +72,6 @@ export default function ObservationWorkbenchPage() {
   // 5. SCREEN ACCORDION & VISIBILITY STATE
   const [isMilestoneSectionCollapsed, setIsMilestoneSectionCollapsed] = useState(false);
 
-  // ==========================================
-  // LIFECYCLE HOOKS (USE EFFECT)
-  // ==========================================
-  
   // Fetch Dynamic Projects from Admin Portal
   useEffect(() => {
     const qProjects = query(collection(db, "admin_projects"));
@@ -128,9 +127,6 @@ export default function ObservationWorkbenchPage() {
     return () => { unsubJournal(); unsubReports(); unsubEmails(); };
   }, [selectedProject]);
 
-  // ==========================================
-  // CALCULATIONS & MEMOS
-  // ==========================================
   const costVariance = evm.earnedValue - evm.actualCost;
   const scheduleVariance = evm.earnedValue - evm.plannedValue;
   const cpi = evm.actualCost > 0 ? (evm.earnedValue / evm.actualCost).toFixed(2) : "0.00";
@@ -155,25 +151,6 @@ export default function ObservationWorkbenchPage() {
     log.sender.toLowerCase().includes(emailSearch.toLowerCase())
   ), [emailLogs, emailSearch]);
 
-  // Chronological Milestone Sequence Sorting (Forecast Start Date Anchor)
-  const sequencedMilestones = useMemo(() => {
-    return [...milestones].sort((a, b) => {
-      if (!a.forecastStart) return 1;
-      if (!b.forecastStart) return -1;
-      return new Date(a.forecastStart).getTime() - new Date(b.forecastStart).getTime();
-    });
-  }, [milestones]);
-
-  // Handler to toggle dashboard roll-up flags dynamically
-  const handleToggleDashboardVisibility = (id: string, currentStatus: boolean) => {
-    setMilestones(milestones.map(m => 
-      m.id === id ? { ...m, showOnDashboard: !currentStatus } : m
-    ));
-  };
-
-  // ==========================================
-  // EVENT HANDLERS
-  // ==========================================
   const handleAutoGenerateReport = async () => {
     setIsGenerating(true);
     try {
@@ -225,6 +202,38 @@ export default function ObservationWorkbenchPage() {
     link.href = encodeURI(csvContent);
     link.download = `Audit_Trail_${selectedProject}_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+
+  const exportFieldObservationsCSV = async () => {
+    try {
+      const observationsCollectionRef = collection(db, "field_observations");
+      const obsSnap = await getDocs(observationsCollectionRef);
+      if (obsSnap.empty) {
+        toast({ variant: "destructive", title: "Database Empty", description: "No observation records exist." });
+        return;
+      }
+      
+      const allObservations = obsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const headers = ["Project ID Context", "Project Scope / Name", "Program (Track & Stage)", "Site Conditions", "Observation Type", "Log Entry Narrative", "Worksite Location Summary", "Resolution Designation Type", "Resolution Status History"];
+
+      const rows = allObservations.map((obs: any) => {
+        const programTrackStage = `[${obs.program || "TDP"}] - ${obs.stage || "Construction"}`;
+        const siteConditions = `Weather: ${obs.weather || "Clear"} | Exterior: ${obs.isExterior ? "Yes" : "No"}`;
+        const locationSummary = `${obs.location || "General Site"} - Level ${obs.buildingLevel || "0"} (Sector ${obs.sectorId || "N/A"})`;
+        const auditTrail = obs.resolutionHistory ? obs.resolutionHistory.map((h: any) => `[${h.operator || "PM"} ${new Date(h.timestamp).toLocaleDateString()}]: ${h.notes}`).join(" | ") : (obs.text || obs.description || "No triage updates compiled.");
+
+        return [obs.projectId || "Unassigned ID", obs.projectName || "Unnamed System Target", programTrackStage.replace(/"/g, '""'), siteConditions.replace(/"/g, '""'), obs.observationType || obs.type || "General", (obs.text || obs.description || "Narrative log context missing").replace(/"/g, '""'), locationSummary.replace(/"/g, '""'), obs.resolutionDesignation || "Unassigned", auditTrail.replace(/"/g, '""')];
+      });
+
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+      const link = document.createElement("a");
+      link.href = encodeURI(csvContent);
+      link.download = `Global_Field_Observations_Snapshot_${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      toast({ title: "Global Export Complete", description: `Extracted ${allObservations.length} logs.` });
+    } catch (err) {
+      toast({ variant: "destructive", title: "Export Error" });
+    }
   };
 
   const handleSaveWorkbenchState = async () => {
@@ -281,17 +290,14 @@ export default function ObservationWorkbenchPage() {
     } catch (err) { }
   };
 
-  // Row Controls
   const handleAddMilestone = (type: "Construction" | "IT") => setMilestones([...milestones, { id: crypto.randomUUID(), type, name: "", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }]);
-  const updateMilestone = (id: string, field: string, value: string) => setMilestones(milestones.map(m => m.id === id ? { ...m, [field]: value } : m));
-  const removeMilestone = (id: string) => setMilestones(milestones.filter(m => m.id !== id));
-  
-  const handleAddDependency = () => setDependencies([...dependencies, { id: crypto.randomUUID(), type: "Trade", targetEntity: "", tradeDivision: "", linkedMilestone: "", activityTask: "", status: "Active Block" }]);
   const updateDependency = (id: string, field: string, value: string) => setDependencies(dependencies.map(d => d.id === id ? { ...d, [field]: value } : d));
   const removeDependency = (id: string) => setDependencies(dependencies.filter(d => d.id !== id));
+  const handleAddDependency = () => setDependencies([...dependencies, { id: crypto.randomUUID(), type: "Trade", targetEntity: "", tradeDivision: "", linkedMilestone: "", activityTask: "", status: "Active Block" }]);
 
   return (
     <div className="max-w-[1650px] mx-auto space-y-6 pb-12 relative font-sans">
+      
       {/* CONTROL PANEL BAR */}
       <div className="flex items-center justify-between border-b pb-4 bg-white sticky top-0 z-20 pt-2">
         <div>
@@ -318,6 +324,10 @@ export default function ObservationWorkbenchPage() {
 
           <Button onClick={handleSaveWorkbenchState} disabled={isSavingState} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 rounded-sm px-4 flex items-center gap-1.5 cursor-pointer shadow-xs">
             <Save className="h-4 w-4" /> {isSavingState ? "Saving..." : "Save Workbench Settings"}
+          </Button>
+
+          <Button onClick={exportFieldObservationsCSV} variant="outline" className="border-slate-300 hover:bg-slate-50 text-slate-700 font-bold h-10 rounded-sm px-4 flex items-center gap-1.5 cursor-pointer shadow-xs">
+            <Download className="h-4 w-4" /> Export Field Reports
           </Button>
 
           <Button onClick={() => setIsReportModalOpen(true)} className="bg-[#142E88] hover:bg-[#2b27b5] text-white font-bold h-10 rounded-sm px-4 cursor-pointer shadow-xs">
@@ -418,69 +428,149 @@ export default function ObservationWorkbenchPage() {
         </CardHeader>
 
         {!isMilestoneSectionCollapsed && (
-          <CardContent className="p-0 overflow-x-auto transition-all">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent bg-slate-100/50">
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider">Type</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44">Milestone Target Name</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Static Baseline Dates</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-48">Active Forecast Dates</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Baseline Plan</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center bg-blue-50/30 text-[#142E88]">Earned Schedule Est.</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center">Variance</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-44 text-red-700">Critical Path Status</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider w-24">Status</TableHead>
-                  <TableHead className="text-[10px] font-bold uppercase tracking-wider text-center w-28">Rollup Visibility</TableHead>
-                  <TableHead className="w-[40px]"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sequencedMilestones.map((m) => {
-                  const baseDays = calculateBaselineDuration(m.baselineStart, m.baselineEnd);
-                  const estDays = calculateEstimatedDuration(m.baselineStart, m.baselineEnd);
-                  const variance = calculateMilestoneVariance(m.baselineEnd, m.forecastEnd);
-                  return (
-                    <TableRow key={m.id} className="hover:bg-slate-50/50">
-                      <TableCell><Badge className={`shadow-none text-[10px] font-bold ${m.type === 'Construction' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>{m.type}</Badge></TableCell>
-                      <TableCell><Input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} className="h-8 text-xs font-semibold" placeholder="Milestone Name" /></TableCell>
-                      <TableCell className="space-y-1">
-                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" disabled={!isAdminMode} value={m.baselineStart} onChange={e => updateMilestone(m.id, "baselineStart", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
-                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" disabled={!isAdminMode} value={m.baselineEnd} onChange={e => updateMilestone(m.id, "baselineEnd", e.target.value)} className={`h-7 text-[10px] px-1 font-mono transition-colors ${!isAdminMode ? "bg-slate-100/70 text-slate-500 border-transparent" : "bg-white border-amber-300"}`} /></div>
-                      </TableCell>
-                      <TableCell className="space-y-1">
-                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">S:</span><Input type="date" value={m.forecastStart} onChange={e => updateMilestone(m.id, "forecastStart", e.target.value)} className="h-7 text-[10px] px-1 font-mono" /></div>
-                        <div className="flex items-center gap-1"><span className="text-[9px] font-bold text-slate-400 w-3">E:</span><Input type="date" value={m.forecastEnd} onChange={e => updateMilestone(m.id, "forecastEnd", e.target.value)} className="h-7 text-[10px] px-1 font-mono border-blue-200" /></div>
-                      </TableCell>
-                      <TableCell className="text-center"><span className="text-xs font-bold font-mono text-slate-500">{baseDays}d</span></TableCell>
-                      <TableCell className="text-center bg-blue-50/10 border-x border-blue-100/50"><span className={`text-xs font-black font-mono ${estDays > baseDays ? 'text-amber-600' : 'text-emerald-600'}`}>{estDays > 0 ? `${estDays}d` : '--'}</span></TableCell>
-                      <TableCell className="text-center"><span className={`text-xs font-bold font-mono ${variance > 0 ? 'text-red-600' : (variance < 0 ? 'text-emerald-600' : 'text-slate-400')}`}>{variance > 0 ? `+${variance}d` : `${variance}d`}</span></TableCell>
-                      <TableCell>
-                        <select value={m.criticalPathStatus || "🟢 On Track"} onChange={e => updateMilestone(m.id, "criticalPathStatus", e.target.value)} className={`h-8 border rounded-sm text-[10px] font-bold px-1 w-full bg-white ${m.criticalPathStatus === '🔴 Critical Path Blocked' ? 'border-red-200 text-red-600 bg-red-50/50' : m.criticalPathStatus === '🟡 Delayed but Sub-Critical' ? 'border-amber-200 text-amber-600 bg-amber-50/30' : 'border-slate-200 text-emerald-600'}`}>
-                          <option value="🟢 On Track">🟢 On Track</option><option value="🟡 Delayed but Sub-Critical">🟡 Delayed but Sub-Critical</option><option value="🔴 Critical Path Blocked">🔴 Critical Path Blocked</option>
-                        </select>
-                      </TableCell>
-                      <TableCell><select value={m.status} onChange={e => updateMilestone(m.id, "status", e.target.value)} className="h-8 border border-slate-200 rounded-sm text-[10px] font-bold px-1 w-full bg-white"><option value="Planned">Planned</option><option value="In Progress">In Progress</option><option value="Complete">Complete</option><option value="Blocked">Blocked</option></select></TableCell>
-                      
-                      {/* DASHBOARD VISIBILITY TOGGLE */}
-                      <TableCell className="text-center">
-                        <Button 
-                          type="button"
-                          variant="ghost" 
-                          size="sm" 
-                          onClick={() => handleToggleDashboardVisibility(m.id, !!m.showOnDashboard)}
-                          className={`h-7 text-[10px] font-bold tracking-tight rounded-sm px-2 cursor-pointer border ${m.showOnDashboard ? "bg-indigo-50 text-[#142E88] border-indigo-200 hover:bg-indigo-100" : "bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100"}`}
-                        >
-                          {m.showOnDashboard ? "👁️ On Executive UI" : "🙈 Hidden"}
-                        </Button>
-                      </TableCell>
+          <CardContent className="p-4 space-y-4 bg-white">
+            {(() => {
+              const tree: Record<string, { workAreas: Record<string, { rooms: Record<string, any[]> }> }> = {};
 
-                      <TableCell><button onClick={() => removeMilestone(m.id)} className="text-red-400 hover:text-red-600 p-1 cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+              milestones.forEach((ms: any) => {
+                const lvl = ms.level?.trim() || "Unassigned Floor Levels";
+                const area = ms.workArea?.trim() || "General Worksite Sector";
+                const rm = ms.specificRoom?.trim() || "General Area Footprint";
+
+                if (!tree[lvl]) tree[lvl] = { workAreas: {} };
+                if (!tree[lvl].workAreas[area]) tree[lvl].workAreas[area] = { rooms: {} };
+                if (!tree[lvl].workAreas[area].rooms[rm]) tree[lvl].workAreas[area].rooms[rm] = [];
+
+                tree[lvl].workAreas[area].rooms[rm].push(ms);
+              });
+
+              if (Object.keys(tree).length === 0) {
+                return <div className="p-8 text-center text-slate-400 italic text-xs">No active structural work packages logged under this project.</div>;
+              }
+
+              return Object.entries(tree).map(([levelName, levelData]) => (
+                <div key={levelName} className="border border-blue-200 rounded-sm overflow-hidden shadow-xs bg-white">
+                  
+                  <div className="bg-[#EBF5FF] text-[#1E3A8A] font-sans font-black text-xs px-4 py-2.5 border-b border-blue-200 uppercase tracking-wide">
+                    🏢 Level Location: {levelName}
+                  </div>
+
+                  <div className="p-3 space-y-3 bg-slate-50/30">
+                    {Object.entries(levelData.workAreas).map(([areaName, areaData]) => (
+                      <div key={areaName} className="border border-emerald-200 rounded-xs bg-white overflow-hidden shadow-2xs">
+                        
+                        <div className="bg-[#E6F4EA] text-[#137333] font-sans font-bold text-[11px] px-3 py-2 border-b border-emerald-200">
+                          🗺️ Functional Work Area: {areaName}
+                        </div>
+
+                        <div className="p-2.5 space-y-2.5">
+                          {Object.entries(areaData.rooms).map(([roomName, roomMilestones]) => (
+                            <div key={roomName} className="border border-amber-200 rounded-xs overflow-hidden bg-white shadow-3xs">
+                              
+                              <div className="bg-[#FEF7E0] text-[#B06000] font-sans font-semibold text-[11px] px-3 py-1.5 border-b border-amber-200 flex justify-between items-center">
+                                <span>🚪 Coordinate Area / Room: {roomName}</span>
+                                <Badge className="bg-amber-100 border border-amber-200/50 text-[9px] shadow-none text-[#B06000] font-mono font-bold">
+                                  {roomMilestones.length} Tasks Active
+                                </Badge>
+                              </div>
+
+                              <div className="overflow-x-auto bg-white">
+                                <Table>
+                                  <TableHeader className="bg-slate-50 border-b">
+                                    <TableRow className="hover:bg-transparent">
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2 pl-4">Delivery Track</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2">Milestone Target Name</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2">Baseline Range</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2">Forecast Window</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2 text-center">Variance</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2">Status</TableHead>
+                                      <TableHead className="text-[10px] font-black uppercase tracking-wider text-slate-500 py-2 text-right pr-4">Actions</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {roomMilestones.map((ms: any) => {
+                                      const startVar = calculateMilestoneVariance(ms.baselineStart, ms.forecastStart);
+                                      const endVar = calculateMilestoneVariance(ms.baselineEnd, ms.forecastEnd);
+                                      return (
+                                        <TableRow key={ms.id} className="hover:bg-slate-50/30 border-b border-slate-100 last:border-none">
+                                          
+                                          <TableCell className="py-2 pl-4">
+                                            <span className={`px-2 py-0.5 rounded-xs text-[9px] font-mono font-bold border ${
+                                              ms.deliveryVehicle === 'IT_DIRECT' 
+                                                ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                                                : 'bg-blue-50 border-blue-200 text-blue-700'
+                                            }`}>
+                                              {ms.deliveryVehicle || (ms.type === 'IT' ? 'IT_DIRECT' : 'CMAR')}
+                                            </span>
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2 font-medium text-slate-800 text-xs">
+                                            {ms.tradeMilestone || ms.name}
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2 text-[10px] font-mono text-slate-500 leading-tight">
+                                            <div>S: {ms.baselineStart || ms.baselineStartDate || '--'}</div>
+                                            <div>E: {ms.baselineEnd || ms.baselineEndDate || '--'}</div>
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2 text-[10px] font-mono text-slate-800 font-bold leading-tight">
+                                            <div>S: {ms.forecastStart || ms.forecastStartDate || '--'}</div>
+                                            <div>E: {ms.forecastEnd || ms.forecastEndDate || '--'}</div>
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2 text-center text-[10px] font-mono font-bold leading-tight">
+                                            <div className={startVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{startVar > 0 ? `+${startVar}d` : `${startVar}d`}</div>
+                                            <div className={endVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{endVar > 0 ? `+${endVar}d` : `${endVar}d`}</div>
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2">
+                                            <Badge variant="outline" className={`text-[9px] font-sans font-bold shadow-none ${
+                                              ms.status === 'Complete' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                              ms.status === 'Blocked' || ms.status === 'Active Block' ? 'bg-red-50 text-red-700 border-red-200 animate-pulse' : 'bg-slate-50 text-slate-700'
+                                            }`}>
+                                              {ms.status}
+                                            </Badge>
+                                          </TableCell>
+                                          
+                                          <TableCell className="py-2 text-right pr-4">
+                                            <Button 
+                                              variant="ghost" 
+                                              size="sm" 
+                                              onClick={() => {
+                                                setEditingMilestone({
+                                                  id: ms.id,
+                                                  level: levelName,
+                                                  workArea: areaName,
+                                                  specificRoom: roomName,
+                                                  tradeMilestone: ms.tradeMilestone || ms.name,
+                                                  baselineStartDate: ms.baselineStart || ms.baselineStartDate || "",
+                                                  baselineEndDate: ms.baselineEnd || ms.baselineEndDate || "",
+                                                  forecastStartDate: ms.forecastStart || ms.forecastStartDate || "",
+                                                  forecastEndDate: ms.forecastEnd || ms.forecastEndDate || "",
+                                                  status: ms.status === 'Complete' ? 'Complete' : (ms.status === 'Blocked' ? 'Active Block' : 'In Progress'),
+                                                  deliveryVehicle: ms.deliveryVehicle || (ms.type === 'IT' ? 'IT_DIRECT' : 'CMAR')
+                                                });
+                                              }}
+                                              className="h-7 text-[#142E88] text-[10px] font-bold hover:bg-blue-50 cursor-pointer px-2"
+                                            >
+                                              <Plus className="h-3 w-3 mr-1" /> Open Update Modal
+                                            </Button>
+                                          </TableCell>
+                                        </TableRow>
+                                      );
+                                    })}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ));
+            })()}
           </CardContent>
         )}
       </Card>
@@ -611,7 +701,7 @@ export default function ObservationWorkbenchPage() {
 
       {/* DRAFT REPORT MODAL WITH AI BUTTON */}
       {isReportModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl flex flex-col max-h-[90vh]">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-[#142E88] text-white rounded-t-lg">
               <div className="flex items-center gap-2"><FileText className="h-5 w-5 text-emerald-400" /><div><h2 className="text-sm font-bold uppercase tracking-widest">Draft Bi-Weekly Status Report</h2></div></div>
@@ -619,7 +709,6 @@ export default function ObservationWorkbenchPage() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-6">
-              {/* THE AI GENERATION BUTTON */}
               <div className="flex justify-end mb-4">
                  <Button type="button" onClick={handleAutoGenerateReport} disabled={isGenerating || journalLogs.length === 0} className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs h-8 gap-1.5 cursor-pointer rounded-sm">
                    <Sparkles className="h-3.5 w-3.5" />
@@ -637,13 +726,119 @@ export default function ObservationWorkbenchPage() {
                   <div><label className="block text-xs font-bold text-slate-700 mb-1 text-red-600"><AlertCircle className="h-3 w-3 inline mr-1" /> Risks</label><Textarea placeholder="Identify blockers..." value={reportForm.risks} onChange={e => setReportForm({...reportForm, risks: e.target.value})} className="text-xs rounded-sm resize-none border-red-200 bg-white" rows={2} required /></div>
                   <div><label className="block text-xs font-bold text-slate-700 mb-1">Impact</label><Textarea placeholder="Financial or schedule impact..." value={reportForm.impact} onChange={e => setReportForm({...reportForm, impact: e.target.value})} className="text-xs rounded-sm resize-none bg-white" rows={2} required /></div>
                 </div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Resolution Plan</label><Textarea placeholder="Describe specific mitigation..." value={reportForm.resolutionPlan} onChange={e => setReportForm({...reportForm, resolutionPlan: e.target.value})} maxLength={500} className="text-xs rounded-sm resize-none bg-white" rows={3} required /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Action Items Required</label><Textarea placeholder="List outstanding decisions..." value={reportForm.actionItems} onChange={e => setReportForm({...reportForm, actionItems: e.target.value})} className="text-xs rounded-sm resize-none bg-white" rows={2} /></div>
+                <div><label className="block text-xs font-bold text-slate-700 mb-1">Resolution Plan</label><Textarea placeholder="Describe specific mitigation..." value={reportForm.resolutionPlan} maxLength={500} className="text-xs rounded-sm resize-none bg-white" rows={3} required /></div>
+                <div><label className="block text-xs font-bold text-slate-700 mb-1">Action Items Required</label><Textarea placeholder="List outstanding decisions..." value={reportForm.actionItems} className="text-xs rounded-sm resize-none bg-white" rows={2} /></div>
               </form>
             </div>
             <div className="p-4 border-t bg-slate-50 flex justify-end gap-3 rounded-b-lg">
               <Button type="button" onClick={() => setIsReportModalOpen(false)} variant="outline" className="text-slate-600 text-xs font-bold cursor-pointer">Cancel</Button>
               <Button form="biweekly-form" type="submit" disabled={isSubmitting} className="bg-[#142E88] hover:bg-[#2b27b5] text-white font-bold h-9 rounded-sm flex items-center justify-center gap-2 cursor-pointer">Save Bi-Weekly Report</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🆕 HIGH-CONTRAST CONTEXTUAL EDIT PANEL MODAL WIDGET (BOUND INDEPENDENTLY TO PREVENT SPLIT COLLISIONS) */}
+      {editingMilestone && (
+        <div className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-md shadow-2xl w-full max-w-xl flex flex-col relative border border-slate-200">
+            
+            <div className="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between rounded-t-md">
+              <h3 className="text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4 text-[#1EA7F4]" /> Contextual Trade Update Panel
+              </h3>
+              <button onClick={() => setEditingMilestone(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-5 w-5" /></button>
+            </div>
+
+            <div className="p-6 space-y-5 bg-white max-h-[75vh] overflow-y-auto">
+              
+              <div className="space-y-3">
+                <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider font-mono block">1. Spatial Hierarchy Tags</span>
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-blue-700 uppercase">Structural Floor Level</label>
+                    <input type="text" value={editingMilestone.level} onChange={(e) => setEditingMilestone({...editingMilestone, level: e.target.value})} className="w-full text-xs rounded border border-blue-200 bg-blue-50/10 p-2 text-slate-900 font-medium focus:outline-none" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-emerald-700 uppercase">Programmatic Work Area Footprint</label>
+                    <input type="text" value={editingMilestone.workArea} onChange={(e) => setEditingMilestone({...editingMilestone, workArea: e.target.value})} className="w-full text-xs rounded border border-emerald-200 bg-emerald-50/10 p-2 text-slate-900 font-medium focus:outline-none" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-amber-700 uppercase">Granular Room / Identity Context</label>
+                    <input type="text" value={editingMilestone.specificRoom} onChange={(e) => setEditingMilestone({...editingMilestone, specificRoom: e.target.value})} className="w-full text-xs rounded border border-amber-200 bg-amber-50/10 p-2 text-slate-900 font-medium focus:outline-none" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase block font-mono">Milestone Target Name</label>
+                <input type="text" value={editingMilestone.tradeMilestone} onChange={(e) => setEditingMilestone({...editingMilestone, tradeMilestone: e.target.value})} className="w-full text-xs rounded border p-2 bg-slate-50 text-slate-900 font-semibold focus:outline-none" />
+              </div>
+
+              <div className="space-y-3 border-t pt-4">
+                <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider font-mono block">2. Schedule Horizon Controls</span>
+                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded border border-slate-100">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 uppercase">Baseline Start</label>
+                    <input type="date" value={editingMilestone.baselineStartDate} onChange={(e) => setEditingMilestone({...editingMilestone, baselineStartDate: e.target.value})} className="w-full text-xs rounded border p-1.5 bg-white font-mono" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 uppercase">Baseline Finish</label>
+                    <input type="date" value={editingMilestone.baselineEndDate} onChange={(e) => setEditingMilestone({...editingMilestone, baselineEndDate: e.target.value})} className="w-full text-xs rounded border p-1.5 bg-white font-mono" />
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    <label className="text-[9px] font-black text-[#142E88] uppercase">Forecast Start</label>
+                    <input type="date" value={editingMilestone.forecastStartDate} onChange={(e) => setEditingMilestone({...editingMilestone, forecastStartDate: e.target.value})} className="w-full text-xs rounded border border-blue-200 p-1.5 bg-white font-mono font-bold" />
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    <label className="text-[9px] font-black text-[#142E88] uppercase">Forecast Finish</label>
+                    <input type="date" value={editingMilestone.forecastEndDate} onChange={(e) => setEditingMilestone({...editingMilestone, forecastEndDate: e.target.value})} className="w-full text-xs rounded border border-blue-200 p-1.5 bg-white font-mono font-bold" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 border-t pt-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-500 font-mono">Execution Status</label>
+                  <select value={editingMilestone.status} onChange={(e) => setEditingMilestone({...editingMilestone, status: e.target.value})} className="w-full text-xs rounded border p-2 bg-white text-slate-900 font-medium cursor-pointer">
+                    <option value="In Progress">⏳ In Progress</option>
+                    <option value="Active Block">🚨 Active Block</option>
+                    <option value="Complete">🟢 Complete</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-500 font-mono">Delivery Track (Procurement)</label>
+                  <select value={editingMilestone.deliveryVehicle} onChange={(e) => setEditingMilestone({...editingMilestone, deliveryVehicle: e.target.value})} className={`w-full text-xs rounded border p-2 bg-white font-black transition-all cursor-pointer ${editingMilestone.deliveryVehicle === 'IT_DIRECT' ? 'border-emerald-300 text-emerald-700 bg-emerald-50/20' : 'border-blue-300 text-blue-700 bg-blue-50/20'}`}>
+                    <option value="CMAR">🏢 CMAR Scope</option>
+                    <option value="IT_DIRECT">⚡ IT_DIRECT Scope</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 px-5 py-3 border-t flex justify-end gap-2 rounded-b-md">
+              <Button variant="outline" size="sm" onClick={() => setEditingMilestone(null)} className="text-xs font-bold cursor-pointer bg-white">Cancel</Button>
+              <Button size="sm" onClick={() => {
+                setMilestones(milestones.map(m => m.id === editingMilestone.id ? {
+                  ...m,
+                  name: editingMilestone.tradeMilestone,
+                  tradeMilestone: editingMilestone.tradeMilestone,
+                  level: editingMilestone.level,
+                  workArea: editingMilestone.workArea,
+                  specificRoom: editingMilestone.specificRoom,
+                  baselineStart: editingMilestone.baselineStartDate,
+                  baselineEnd: editingMilestone.baselineEndDate,
+                  forecastStart: editingMilestone.forecastStartDate,
+                  forecastEnd: editingMilestone.forecastEndDate,
+                  status: editingMilestone.status === 'Active Block' ? 'Blocked' : editingMilestone.status,
+                  deliveryVehicle: editingMilestone.deliveryVehicle,
+                  type: editingMilestone.deliveryVehicle === 'IT_DIRECT' ? 'IT' : 'Construction'
+                } : m));
+                setEditingMilestone(null);
+                toast({ title: "Milestone State Staged", description: "Click 'Save Workbench Settings' at the top to sync down to Firestore." });
+              }} className="bg-[#142E88] hover:bg-blue-800 text-white text-xs font-bold px-4 cursor-pointer">
+                Commit Changes
+              </Button>
             </div>
           </div>
         </div>
@@ -663,7 +858,6 @@ export default function ObservationWorkbenchPage() {
             </div>
             
             <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto bg-slate-50/50">
-              {/* Header Meta */}
               <div className="grid grid-cols-4 gap-4 pb-4 border-b border-slate-200 bg-white p-4 rounded-sm shadow-xs">
                 <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Reporting Period</span><span className="text-sm font-semibold text-[#142E88]">{viewingSnapshot.reportingPeriod}</span></div>
                 <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Submitted By</span><span className="text-sm font-semibold text-slate-800">{viewingSnapshot.loggedBy?.split('@')[0]}</span></div>
@@ -678,7 +872,6 @@ export default function ObservationWorkbenchPage() {
                 </div>
               </div>
 
-              {/* Narrative Content */}
               <div className="bg-white p-5 rounded-sm border border-slate-200 shadow-xs space-y-6">
                 <div>
                   <span className="block text-xs font-bold text-slate-800 mb-2 border-b pb-1">3-Week Look Ahead</span>

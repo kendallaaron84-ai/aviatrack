@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter } from "lucide-react";
+import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter, Download } from "lucide-react";
 
 // Operational Parametric Normalization Weights
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
@@ -175,6 +175,50 @@ export default function RiskClusterDashboard() {
     }
   };
 
+  // 📥 POINT-IN-TIME COMPLIANCE EXPORT ENGINE FOR AC-44 VALUE FIELDS
+  const handleExportRiskRegisterCSV = () => {
+    if (filteredItems.length === 0) {
+      alert("No active risk registry logs available in the current scope to export.");
+      return;
+    }
+
+    // 11 Strict PMO Specification Column Headers
+    const headers = [
+      "Date Created", "Title", "Description", "Comments", "RAIDQ Type", 
+      "Probability", "Importance", "Assigned Owner", "ROAM Category", 
+      "Observation Abstract Context", "Historical Triage Notes"
+    ];
+
+    const rows = filteredItems.map(item => {
+      // Safely aggregate array elements into unified multi-line cell text for Excel parsing
+      const formattedNotesLog = item.historicalComments
+        ? item.historicalComments.map((c: any) => `[${c.author} - ${new Date(c.timestamp).toLocaleDateString()}]: ${c.text}`).join(" | ")
+        : "";
+
+      return [
+        item.createdAt || "",
+        (item.title || "").replace(/"/g, '""'),
+        (item.description || "").replace(/"/g, '""'),
+        formattedNotesLog.replace(/"/g, '""'),
+        item.classification || "Risk",
+        item.probability !== undefined ? `${item.probability} / 4` : "0 / 4",
+        item.importance || "Medium",
+        item.owner || "Unassigned",
+        item.roamCategory || "New / Unassigned",
+        (item.description || "").replace(/"/g, '""'),  // Maps abstract context
+        formattedNotesLog.replace(/"/g, '""')         // Maps triage notes history
+      ];
+    });
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+    const link = document.createElement("a");
+    link.href = encodeURI(csvContent);
+    link.download = `Risk_Register_Snapshot_${selectedProject !== "ALL" ? selectedProject : "Master"}_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="max-w-[1700px] mx-auto px-6 py-6 space-y-6 bg-[#F8FAFC] text-slate-900 min-h-screen font-sans">
       
@@ -198,6 +242,16 @@ export default function RiskClusterDashboard() {
           >
             <RefreshCw className={`h-3 w-3 ${isSyncing ? 'animate-spin' : ''}`} />
             Sync Logs
+          </Button>
+
+          {/* 🆕 ACCEPTS SNAPSHOT ACTION TARGET CLICK HOOK */}
+          <Button 
+            type="button"
+            onClick={handleExportRiskRegisterCSV}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-9 px-3 rounded-none text-[10px] uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+          >
+            <Download className="h-3 w-3" />
+            Export CSV
           </Button>
 
           <div className="hidden sm:block h-6 w-px bg-slate-200 shrink-0" />
