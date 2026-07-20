@@ -9,8 +9,8 @@ runConfig:
   maxInstances: 1
 
 env:
-  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
-    value: "aviatrack-prod"
+  - variable: NODE_OPTIONS
+    value: "--max-old-space-size=4096"
   - variable: FIREBASE_PROJECT_ID
     value: "aviatrack-prod"
   - variable: FIREBASE_CLIENT_EMAIL
