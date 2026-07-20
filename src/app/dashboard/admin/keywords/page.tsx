@@ -18,7 +18,7 @@ export default function KeywordManagementWindow() {
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "config_keywords"), (snapshot) => {
       setKeywords(snapshot.docs.map(d => d.id));
-    });
+    }, (error) => console.error("Firestore config_keywords listener error:", error));
     return () => unsub();
   }, []);
 

@@ -50,9 +50,15 @@ export default function AirfieldMapOverlayPage() {
 
   // 2. Fetch Projects and GeoLayers
   useEffect(() => {
-    const unsubProjects = onSnapshot(collection(db, "admin_projects"), (snapshot) => {
+    const unsubProjects = onSnapshot(
+      collection(db, "admin_projects"),
+      (snapshot) => {
         setMapProjects(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+      },
+      (error: Error) => {
+        console.error("Firestore admin_projects listener error:", error);
+      }
+    );
 
     const unsubLayers = onSnapshot(collection(db, "airfield_map_layers"), (snapshot) => {
         const layers = snapshot.docs.map(doc => {
@@ -103,7 +109,7 @@ export default function AirfieldMapOverlayPage() {
         };
         });
         setGeoLayers(layers);
-    });
+    }, (error: Error) => console.error("Firestore airfield_map_layers listener error:", error));
 
     return () => { unsubProjects(); unsubLayers(); };
   }, []);

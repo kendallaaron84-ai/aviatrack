@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, ResponsiveContainer, Tooltip } from "recharts";
-import { db } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import { collection, onSnapshot, query, doc, updateDoc, addDoc, getDocs, where } from "firebase/firestore";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -62,7 +62,7 @@ export default function RiskClusterDashboard() {
         const freshTarget = items.find(i => i.id === selectedItem.id);
         if (freshTarget) setSelectedItem(freshTarget);
       }
-    });
+    }, (error) => console.error("Firestore raid_matrix listener error:", error));
     return () => unsub();
   }, [selectedItem]);
 
@@ -108,7 +108,12 @@ export default function RiskClusterDashboard() {
   const handleTriggerAiSync = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetch("/api/analyze-raid", { method: "POST" });
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
+      const res = await fetch("/api/analyze-raid", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await res.json();
       alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0} items.`);
     } catch (err) {

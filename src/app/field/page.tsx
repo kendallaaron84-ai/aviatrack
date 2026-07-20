@@ -55,7 +55,7 @@ export default function FieldIntakePage() {
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "admin_projects"), (snap) => {
       setProjects(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore admin_projects listener error:", error));
     return () => unsub();
   }, []);
 
@@ -82,12 +82,12 @@ export default function FieldIntakePage() {
 
     const unsubLocs = onSnapshot(collection(db, "admin_projects", project, "locations"), (snap) => {
       setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore project locations listener error:", error));
 
     const unsubPers = onSnapshot(collection(db, "admin_projects", project, "personnel"), (snap) => {
       const activePersonnel = snap.docs.map(d => ({ id: d.id, ...d.data() } as any)).filter(p => p.active !== false);
       setPersonnel(activePersonnel);
-    });
+    }, (error) => console.error("Firestore project personnel listener error:", error));
 
     return () => { unsubLocs(); unsubPers(); };
   }, [project]);

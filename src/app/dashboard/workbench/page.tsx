@@ -32,6 +32,18 @@ const TRADE_DIVISIONS = [
   { code: "Div 28", name: "Electronic Safety & Security" }
 ];
 
+// Natural sorting compare helper
+const naturalCompare = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+
+const sortLevels = (a: string, b: string) => {
+  const isAUnassigned = a === "Unassigned Floor Levels";
+  const isBUnassigned = b === "Unassigned Floor Levels";
+  if (isAUnassigned && !isBUnassigned) return 1;
+  if (!isAUnassigned && isBUnassigned) return -1;
+  return naturalCompare(a, b);
+};
+
 export default function ObservationWorkbenchPage() {
   const { toast } = useToast();
 
@@ -72,6 +84,67 @@ export default function ObservationWorkbenchPage() {
   // 5. SCREEN ACCORDION & VISIBILITY STATE
   const [isMilestoneSectionCollapsed, setIsMilestoneSectionCollapsed] = useState(false);
 
+  const [initialState, setInitialState] = useState<string>("");
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  useEffect(() => {
+    if (!initialState) {
+      setHasUnsavedChanges(false);
+      return;
+    }
+    const currentState = JSON.stringify({ milestones, dependencies, evm });
+    setHasUnsavedChanges(initialState !== currentState);
+  }, [initialState, milestones, dependencies, evm]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = ''; // Required for browser prompt
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const sortedSpatialTree = useMemo(() => {
+    const tree: Record<string, { workAreas: Record<string, { rooms: Record<string, any[]> }> }> = {};
+
+    milestones.forEach((ms: any) => {
+      const lvl = ms.level?.trim() || "Unassigned Floor Levels";
+      const area = ms.workArea?.trim() || "General Worksite Sector";
+      const rm = ms.specificRoom?.trim() || "General Area Footprint";
+
+      if (!tree[lvl]) tree[lvl] = { workAreas: {} };
+      if (!tree[lvl].workAreas[area]) tree[lvl].workAreas[area] = { rooms: {} };
+      if (!tree[lvl].workAreas[area].rooms[rm]) tree[lvl].workAreas[area].rooms[rm] = [];
+
+      tree[lvl].workAreas[area].rooms[rm].push(ms);
+    });
+
+    const sortedLevels = Object.entries(tree).sort(([aName], [bName]) => sortLevels(aName, bName));
+
+    return sortedLevels.map(([levelName, levelData]) => {
+      const sortedWorkAreas = Object.entries(levelData.workAreas).sort(([aName], [bName]) => naturalCompare(aName, bName));
+
+      const processedWorkAreas = sortedWorkAreas.map(([areaName, areaData]) => {
+        const sortedRooms = Object.entries(areaData.rooms).sort(([aName], [bName]) => naturalCompare(aName, bName));
+        return {
+          areaName,
+          rooms: sortedRooms.map(([roomName, roomMilestones]) => ({
+            roomName,
+            milestones: roomMilestones
+          }))
+        };
+      });
+
+      return {
+        levelName,
+        workAreas: processedWorkAreas
+      };
+    });
+  }, [milestones]);
+
   // Fetch Dynamic Projects from Admin Portal
   useEffect(() => {
     const qProjects = query(collection(db, "admin_projects"));
@@ -84,7 +157,7 @@ export default function ObservationWorkbenchPage() {
       }));
       setAvailableProjects(projects);
       if (!selectedProject && projects.length > 0) setSelectedProject(projects[0].id);
-    });
+    }, (error: Error) => console.error("Firestore admin_projects listener error:", error));
     return () => unsubProjects();
   }, [selectedProject]);
 
@@ -100,29 +173,36 @@ export default function ObservationWorkbenchPage() {
     
     const fetchWorkbenchState = async () => {
       const stateSnap = await getDoc(doc(db, "project_workbench_states", selectedProject));
+      let initialMilestones = [];
+      let initialDependencies = [];
+      let initialEvm = { plannedValue: 0, earnedValue: 0, actualCost: 0 };
       if (stateSnap.exists()) {
         const data = stateSnap.data();
-        setMilestones(data.milestones || []);
-        setDependencies(data.dependencies || []);
-        setEvm(data.evm || { plannedValue: 0, earnedValue: 0, actualCost: 0 });
+        initialMilestones = data.milestones || [];
+        initialDependencies = data.dependencies || [];
+        initialEvm = data.evm || { plannedValue: 0, earnedValue: 0, actualCost: 0 };
       } else {
-        setMilestones([{ id: crypto.randomUUID(), type: "Construction", name: "Drywall Complete", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }]);
-        setDependencies([]);
-        setEvm({ plannedValue: 0, earnedValue: 0, actualCost: 0 });
+        initialMilestones = [{ id: crypto.randomUUID(), type: "Construction", name: "Drywall Complete", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }];
+        initialDependencies = [];
+        initialEvm = { plannedValue: 0, earnedValue: 0, actualCost: 0 };
       }
+      setMilestones(initialMilestones);
+      setDependencies(initialDependencies);
+      setEvm(initialEvm);
+      setInitialState(JSON.stringify({ milestones: initialMilestones, dependencies: initialDependencies, evm: initialEvm }));
     };
 
     fetchBaseline();
     fetchWorkbenchState();
 
-    const unsubJournal = onSnapshot(query(collection(db, "project_journals", selectedProject, "entries"), orderBy("timestamp", "desc")), (snap) => setJournalLogs(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const unsubReports = onSnapshot(query(collection(db, "project_status_reports", selectedProject, "biweekly_reports"), orderBy("timestamp", "desc")), (snap) => setStatusReports(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubJournal = onSnapshot(query(collection(db, "project_journals", selectedProject, "entries"), orderBy("timestamp", "desc")), (snap) => setJournalLogs(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore project journal listener error:", error));
+    const unsubReports = onSnapshot(query(collection(db, "project_status_reports", selectedProject, "biweekly_reports"), orderBy("timestamp", "desc")), (snap) => setStatusReports(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore project reports listener error:", error));
     
     const unsubEmails = onSnapshot(query(collection(db, "project_correspondence", selectedProject, "logs"), orderBy("timestamp", "desc")), (snap) => {
       const currentUser = auth.currentUser?.email || "Unknown PM";
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setEmailLogs(allLogs.filter((log: any) => log.loggedBy === currentUser));
-    });
+    }, (error) => console.error("Firestore project correspondence listener error:", error));
 
     return () => { unsubJournal(); unsubReports(); unsubEmails(); };
   }, [selectedProject]);
@@ -154,9 +234,14 @@ export default function ObservationWorkbenchPage() {
   const handleAutoGenerateReport = async () => {
     setIsGenerating(true);
     try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
       const response = await fetch('/api/generate-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           journalEntries: journalLogs,
           reportingPeriod: `${reportForm.periodStart} to ${reportForm.periodEnd}`
@@ -247,6 +332,7 @@ export default function ObservationWorkbenchPage() {
       const savePayload = { projectId: selectedProject, milestones: processedMilestones, dependencies, evm, statusHealthIndicator: macroCalculatedHealth, lastSavedBy: currentUser, lastSavedAt: timestamp };
       await setDoc(doc(db, "project_workbench_states", selectedProject), savePayload);
       await addDoc(collection(db, "project_workbench_states", selectedProject, "historical_snapshots"), { ...savePayload, snapshotTimestamp: timestamp });
+      setInitialState(JSON.stringify({ milestones, dependencies, evm }));
       toast({ title: "Workbench Settings Saved" });
     } catch (err) {
       toast({ variant: "destructive", title: "Save Error" });
@@ -275,6 +361,22 @@ export default function ObservationWorkbenchPage() {
       await addDoc(collection(db, "project_status_reports", selectedProject, "biweekly_reports"), { ...reportForm, reportingPeriod: reportingPeriodString, evmMetrics: { plannedValue: evm.plannedValue, earnedValue: evm.earnedValue, actualCost: evm.actualCost, costVariance, scheduleVariance, cpi, spi }, milestonesSnapshot: milestones, dependenciesSnapshot: dependencies, loggedBy: currentUser, timestamp });
       await setDoc(doc(db, "portfolio_rollups", selectedProject), { projectId: selectedProject, projectName: activeProjectData.name, budgetAllocation: activeProjectData.budget, costVariance, scheduleVariance, cpi: parseFloat(cpi), spi: currentSpiNum, totalSlippageDays: totalScheduleSlippageDays, criticalBlockersCount: activeConstructionDependenciesCount, latestPeriod: reportingPeriodString, executiveSummaryLookAhead: reportForm.lookAhead, currentRisksText: reportForm.risks, mitigationPlanText: reportForm.resolutionPlan, lastSignOffBy: currentUser, lastSignOffAt: timestamp, statusHealthIndicator: costVariance < 0 || hasCriticalPathBlocker || totalScheduleSlippageDays > 14 || currentSpiNum < 1 ? "Critical Risk" : "On Track" });
 
+      await addDoc(collection(db, "status_reports"), {
+        projectId: selectedProject,
+        projectName: activeProjectData.name || selectedProject,
+        reportPeriod: reportingPeriodString,
+        submittedBy: currentUser,
+        cpi: parseFloat(cpi) || 1.0,
+        spi: currentSpiNum || 1.0,
+        statusHealth: costVariance < 0 || hasCriticalPathBlocker || totalScheduleSlippageDays > 14 || currentSpiNum < 1 ? "Critical Risk" : "On Track",
+        createdAt: timestamp,
+        lookAhead: reportForm.lookAhead || "",
+        risks: reportForm.risks || "",
+        impact: reportForm.impact || "",
+        resolutionPlan: reportForm.resolutionPlan || "",
+        actionItems: reportForm.actionItems || ""
+      });
+
       toast({ title: "Report Committed" });
       setReportForm({ periodStart: "", periodEnd: "", lookAhead: "", risks: "", impact: "", resolutionPlan: "", actionItems: "" });
       setIsReportModalOpen(false);
@@ -294,6 +396,12 @@ export default function ObservationWorkbenchPage() {
   const updateDependency = (id: string, field: string, value: string) => setDependencies(dependencies.map(d => d.id === id ? { ...d, [field]: value } : d));
   const removeDependency = (id: string) => setDependencies(dependencies.filter(d => d.id !== id));
   const handleAddDependency = () => setDependencies([...dependencies, { id: crypto.randomUUID(), type: "Trade", targetEntity: "", tradeDivision: "", linkedMilestone: "", activityTask: "", status: "Active Block" }]);
+  const handleDeleteMilestone = (id: string) => {
+    setMilestones(milestones.filter(m => m.id !== id));
+    setHasUnsavedChanges(true);
+    setEditingMilestone(null);
+    toast({ title: "Milestone Removed", description: "Click 'Save Workbench Settings' to persist changes." });
+  };
 
   return (
     <div className="max-w-[1650px] mx-auto space-y-6 pb-12 relative font-sans">
@@ -321,6 +429,12 @@ export default function ObservationWorkbenchPage() {
               {availableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
+
+          {hasUnsavedChanges && (
+            <Badge className="bg-amber-100 border border-amber-300 text-amber-800 font-bold h-10 px-3 rounded-sm flex items-center gap-1.5 animate-pulse shrink-0">
+              <AlertTriangle className="h-4 w-4 text-amber-600" /> Unsaved Changes
+            </Badge>
+          )}
 
           <Button onClick={handleSaveWorkbenchState} disabled={isSavingState} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 rounded-sm px-4 flex items-center gap-1.5 cursor-pointer shadow-xs">
             <Save className="h-4 w-4" /> {isSavingState ? "Saving..." : "Save Workbench Settings"}
@@ -430,33 +544,19 @@ export default function ObservationWorkbenchPage() {
         {!isMilestoneSectionCollapsed && (
           <CardContent className="p-4 space-y-4 bg-white">
             {(() => {
-              const tree: Record<string, { workAreas: Record<string, { rooms: Record<string, any[]> }> }> = {};
-
-              milestones.forEach((ms: any) => {
-                const lvl = ms.level?.trim() || "Unassigned Floor Levels";
-                const area = ms.workArea?.trim() || "General Worksite Sector";
-                const rm = ms.specificRoom?.trim() || "General Area Footprint";
-
-                if (!tree[lvl]) tree[lvl] = { workAreas: {} };
-                if (!tree[lvl].workAreas[area]) tree[lvl].workAreas[area] = { rooms: {} };
-                if (!tree[lvl].workAreas[area].rooms[rm]) tree[lvl].workAreas[area].rooms[rm] = [];
-
-                tree[lvl].workAreas[area].rooms[rm].push(ms);
-              });
-
-              if (Object.keys(tree).length === 0) {
+              if (sortedSpatialTree.length === 0) {
                 return <div className="p-8 text-center text-slate-400 italic text-xs">No active structural work packages logged under this project.</div>;
               }
 
-              return Object.entries(tree).map(([levelName, levelData]) => (
+              return sortedSpatialTree.map(({ levelName, workAreas }) => (
                 <div key={levelName} className="border border-blue-200 rounded-sm overflow-hidden shadow-xs bg-white">
                   
                   <div className="bg-[#EBF5FF] text-[#1E3A8A] font-sans font-black text-xs px-4 py-2.5 border-b border-blue-200 uppercase tracking-wide">
-                    🏢 Level Location: {levelName}
+                    🏢 LEVEL LOCATION: {levelName}
                   </div>
 
                   <div className="p-3 space-y-3 bg-slate-50/30">
-                    {Object.entries(levelData.workAreas).map(([areaName, areaData]) => (
+                    {workAreas.map(({ areaName, rooms }) => (
                       <div key={areaName} className="border border-emerald-200 rounded-xs bg-white overflow-hidden shadow-2xs">
                         
                         <div className="bg-[#E6F4EA] text-[#137333] font-sans font-bold text-[11px] px-3 py-2 border-b border-emerald-200">
@@ -464,11 +564,11 @@ export default function ObservationWorkbenchPage() {
                         </div>
 
                         <div className="p-2.5 space-y-2.5">
-                          {Object.entries(areaData.rooms).map(([roomName, roomMilestones]) => (
+                          {rooms.map(({ roomName, milestones: roomMilestones }) => (
                             <div key={roomName} className="border border-amber-200 rounded-xs overflow-hidden bg-white shadow-3xs">
                               
                               <div className="bg-[#FEF7E0] text-[#B06000] font-sans font-semibold text-[11px] px-3 py-1.5 border-b border-amber-200 flex justify-between items-center">
-                                <span>🚪 Coordinate Area / Room: {roomName}</span>
+                                <span>📍 Coordinate Area / Room: {roomName}</span>
                                 <Badge className="bg-amber-100 border border-amber-200/50 text-[9px] shadow-none text-[#B06000] font-mono font-bold">
                                   {roomMilestones.length} Tasks Active
                                 </Badge>
@@ -526,35 +626,46 @@ export default function ObservationWorkbenchPage() {
                                           <TableCell className="py-2">
                                             <Badge variant="outline" className={`text-[9px] font-sans font-bold shadow-none ${
                                               ms.status === 'Complete' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                              ms.status === 'Blocked' || ms.status === 'Active Block' ? 'bg-red-50 text-red-700 border-red-200 animate-pulse' : 'bg-slate-50 text-slate-700'
+                                              ms.status === 'Blocked' || ms.status === 'Active Block' ? 'bg-red-50 text-red-700 border-red-200 animate-pulse' :
+                                              ms.status === 'Planned' ? 'bg-slate-100 text-slate-600 border-slate-300' :
+                                              'bg-slate-50 text-slate-700 border-slate-200'
                                             }`}>
                                               {ms.status}
                                             </Badge>
                                           </TableCell>
                                           
                                           <TableCell className="py-2 text-right pr-4">
-                                            <Button 
-                                              variant="ghost" 
-                                              size="sm" 
-                                              onClick={() => {
-                                                setEditingMilestone({
-                                                  id: ms.id,
-                                                  level: levelName,
-                                                  workArea: areaName,
-                                                  specificRoom: roomName,
-                                                  tradeMilestone: ms.tradeMilestone || ms.name,
-                                                  baselineStartDate: ms.baselineStart || ms.baselineStartDate || "",
-                                                  baselineEndDate: ms.baselineEnd || ms.baselineEndDate || "",
-                                                  forecastStartDate: ms.forecastStart || ms.forecastStartDate || "",
-                                                  forecastEndDate: ms.forecastEnd || ms.forecastEndDate || "",
-                                                  status: ms.status === 'Complete' ? 'Complete' : (ms.status === 'Blocked' ? 'Active Block' : 'In Progress'),
-                                                  deliveryVehicle: ms.deliveryVehicle || (ms.type === 'IT' ? 'IT_DIRECT' : 'CMAR')
-                                                });
-                                              }}
-                                              className="h-7 text-[#142E88] text-[10px] font-bold hover:bg-blue-50 cursor-pointer px-2"
-                                            >
-                                              <Plus className="h-3 w-3 mr-1" /> Open Update Modal
-                                            </Button>
+                                            <div className="flex items-center justify-end gap-2">
+                                              <Button 
+                                                variant="ghost" 
+                                                size="sm" 
+                                                onClick={() => {
+                                                  setEditingMilestone({
+                                                    id: ms.id,
+                                                    level: levelName,
+                                                    workArea: areaName,
+                                                    specificRoom: roomName,
+                                                    tradeMilestone: ms.tradeMilestone || ms.name,
+                                                    baselineStartDate: ms.baselineStart || ms.baselineStartDate || "",
+                                                    baselineEndDate: ms.baselineEnd || ms.baselineEndDate || "",
+                                                    forecastStartDate: ms.forecastStart || ms.forecastStartDate || "",
+                                                    forecastEndDate: ms.forecastEnd || ms.forecastEndDate || "",
+                                                    status: ms.status === 'Blocked' ? 'Active Block' : (ms.status || 'Planned'),
+                                                    deliveryVehicle: ms.deliveryVehicle || (ms.type === 'IT' ? 'IT_DIRECT' : 'CMAR')
+                                                  });
+                                                }}
+                                                className="h-7 text-[#142E88] text-[10px] font-bold hover:bg-blue-50 cursor-pointer px-2"
+                                              >
+                                                <Plus className="h-3 w-3 mr-1" /> Open Update Modal
+                                              </Button>
+                                              <button
+                                                onClick={() => handleDeleteMilestone(ms.id)}
+                                                title="Delete Task / Milestone"
+                                                className="p-1 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                                              >
+                                                <Trash2 className="h-4 w-4 text-red-500 hover:text-red-700 cursor-pointer" />
+                                              </button>
+                                            </div>
                                           </TableCell>
                                         </TableRow>
                                       );
@@ -801,6 +912,7 @@ export default function ObservationWorkbenchPage() {
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase text-slate-500 font-mono">Execution Status</label>
                   <select value={editingMilestone.status} onChange={(e) => setEditingMilestone({...editingMilestone, status: e.target.value})} className="w-full text-xs rounded border p-2 bg-white text-slate-900 font-medium cursor-pointer">
+                    <option value="Planned">📅 Planned</option>
                     <option value="In Progress">⏳ In Progress</option>
                     <option value="Active Block">🚨 Active Block</option>
                     <option value="Complete">🟢 Complete</option>
@@ -816,29 +928,39 @@ export default function ObservationWorkbenchPage() {
               </div>
             </div>
 
-            <div className="bg-slate-50 px-5 py-3 border-t flex justify-end gap-2 rounded-b-md">
-              <Button variant="outline" size="sm" onClick={() => setEditingMilestone(null)} className="text-xs font-bold cursor-pointer bg-white">Cancel</Button>
-              <Button size="sm" onClick={() => {
-                setMilestones(milestones.map(m => m.id === editingMilestone.id ? {
-                  ...m,
-                  name: editingMilestone.tradeMilestone,
-                  tradeMilestone: editingMilestone.tradeMilestone,
-                  level: editingMilestone.level,
-                  workArea: editingMilestone.workArea,
-                  specificRoom: editingMilestone.specificRoom,
-                  baselineStart: editingMilestone.baselineStartDate,
-                  baselineEnd: editingMilestone.baselineEndDate,
-                  forecastStart: editingMilestone.forecastStartDate,
-                  forecastEnd: editingMilestone.forecastEndDate,
-                  status: editingMilestone.status === 'Active Block' ? 'Blocked' : editingMilestone.status,
-                  deliveryVehicle: editingMilestone.deliveryVehicle,
-                  type: editingMilestone.deliveryVehicle === 'IT_DIRECT' ? 'IT' : 'Construction'
-                } : m));
-                setEditingMilestone(null);
-                toast({ title: "Milestone State Staged", description: "Click 'Save Workbench Settings' at the top to sync down to Firestore." });
-              }} className="bg-[#142E88] hover:bg-blue-800 text-white text-xs font-bold px-4 cursor-pointer">
-                Commit Changes
+            <div className="bg-slate-50 px-5 py-3 border-t flex justify-between items-center rounded-b-md">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => handleDeleteMilestone(editingMilestone.id)} 
+                className="text-xs font-bold text-red-600 hover:text-red-700 border-red-200 hover:border-red-300 hover:bg-red-50 bg-white cursor-pointer flex items-center gap-1"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Delete Task / Milestone
               </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setEditingMilestone(null)} className="text-xs font-bold cursor-pointer bg-white">Cancel</Button>
+                <Button size="sm" onClick={() => {
+                  setMilestones(milestones.map(m => m.id === editingMilestone.id ? {
+                    ...m,
+                    name: editingMilestone.tradeMilestone,
+                    tradeMilestone: editingMilestone.tradeMilestone,
+                    level: editingMilestone.level,
+                    workArea: editingMilestone.workArea,
+                    specificRoom: editingMilestone.specificRoom,
+                    baselineStart: editingMilestone.baselineStartDate,
+                    baselineEnd: editingMilestone.baselineEndDate,
+                    forecastStart: editingMilestone.forecastStartDate,
+                    forecastEnd: editingMilestone.forecastEndDate,
+                    status: editingMilestone.status === 'Active Block' ? 'Blocked' : editingMilestone.status,
+                    deliveryVehicle: editingMilestone.deliveryVehicle,
+                    type: editingMilestone.deliveryVehicle === 'IT_DIRECT' ? 'IT' : 'Construction'
+                  } : m));
+                  setEditingMilestone(null);
+                  toast({ title: "Milestone State Staged", description: "Click 'Save Workbench Settings' at the top to sync down to Firestore." });
+                }} className="bg-[#142E88] hover:bg-blue-800 text-white text-xs font-bold px-4 cursor-pointer">
+                  Commit Changes
+                </Button>
+              </div>
             </div>
           </div>
         </div>

@@ -11,6 +11,10 @@ import { Wallet, AlertTriangle, Activity, TrendingUp, ChevronRight, ChevronDown,
 import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase"; 
 import { collection, collectionGroup, onSnapshot, query, orderBy } from "firebase/firestore";
+import { DynamicPortfolioTimeline } from "@/components/dashboard/DynamicPortfolioTimeline";
+import { ActiveThreatRiskRegister } from "@/components/dashboard/ActiveThreatRiskRegister";
+import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
+import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 
 // Definitive Risk Status Colors System
 const STATUS_COLORS: Record<string, string> = {
@@ -20,6 +24,9 @@ const STATUS_COLORS: Record<string, string> = {
   "Accepted": "#3B82F6",         // Light Blue 🔵
   "Resolved": "#10B981"          // Green 🟢
 };
+
+const TABLE_STATUS_FILTERS = ["ALL", "In Progress", "Planned", "Complete", "Active Block", "Monitoring"] as const;
+type TableStatusFilter = typeof TABLE_STATUS_FILTERS[number];
 
 const formatTimestamp = (ts: any): string => {
   if (!ts) return "";
@@ -38,6 +45,8 @@ const getEvmColorClass = (val: any) => {
   return parsed < 1 ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold';
 };
 
+const formatEvmMetric = (value: unknown) => typeof value === "number" ? value.toFixed(2) : String(value || "N/A");
+
 export default function AviationExecutiveControlRoom() {
   const { toast } = useToast();
   const [activeProgram, setActiveProgram] = useState<"ALL" | "TDP" | "CIP">("ALL");
@@ -48,16 +57,18 @@ export default function AviationExecutiveControlRoom() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [generatedReportData, setGeneratedReportData] = useState<any>(null);
-  const [viewingSnapshot, setViewingSnapshot] = useState<any>(null);
+  const [viewingSnapshot, setViewingSnapshot] = useState<StatusReport | null>(null);
   const [severitySelection, setSeveritySelection] = useState<string>("ALL");
+  const [milestoneStatusFilter, setMilestoneStatusFilter] = useState<TableStatusFilter>("ALL");
+  const [dependencyStatusFilter, setDependencyStatusFilter] = useState<TableStatusFilter>("ALL");
 
   // Database States
-  const [allProjects, setAllProjects] = useState<any[]>([]);
-  const [filteredProjects, setFilteredProjects] = useState<any[]>([]);
-  const [criticalBlockers, setCriticalBlockers] = useState<any[]>([]);
-  const [rollups, setRollups] = useState<any[]>([]);
-  const [workbenchStates, setWorkbenchStates] = useState<any[]>([]);
-  const [raidItems, setRaidItems] = useState<any[]>([]);
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
+  const [filteredProjects, setFilteredProjects] = useState<Project[]>([]);
+  const [criticalBlockers, setCriticalBlockers] = useState<RAIDItem[]>([]);
+  const [rollups, setRollups] = useState<RollupState[]>([]);
+  const [workbenchStates, setWorkbenchStates] = useState<RollupState[]>([]);
+  const [raidItems, setRaidItems] = useState<RAIDItem[]>([]);
   
   // 📆 ENHANCEMENT 1: CALENDAR WINDOW INITIALIZATION ENGINE
   const [calendarBounds, setCalendarBounds] = useState(() => {
@@ -85,36 +96,31 @@ export default function AviationExecutiveControlRoom() {
   });
   
   // Global Historical Reports State
-  const [globalReports, setGlobalReports] = useState<any[]>([]);
+  const [globalReports, setGlobalReports] = useState<StatusReport[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
   useEffect(() => {
     const unsubProjects = onSnapshot(collection(db, "admin_projects"), (snapshot) => {
-      setAllProjects(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+      setAllProjects(snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Project[]);
+    }, (error) => console.error("Firestore admin_projects listener error:", error));
     const unsubObs = onSnapshot(collection(db, "field_observations"), (snapshot) => {
       setCriticalBlockers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore field_observations listener error:", error));
     const qRollups = query(collection(db, "portfolio_rollups"), orderBy("projectName", "asc"));
     const unsubRollups = onSnapshot(qRollups, (snapshot) => {
       setRollups(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-    const qGlobalReports = query(collectionGroup(db, "biweekly_reports"), orderBy("timestamp", "desc"));
+    }, (error) => console.error("Firestore portfolio_rollups listener error:", error));
+    const qGlobalReports = query(collection(db, "status_reports"), orderBy("createdAt", "desc"));
     const unsubGlobalReports = onSnapshot(qGlobalReports, (snapshot) => {
-      setGlobalReports(snapshot.docs.map(d => {
-        const pathSegments = d.ref.path.split('/');
-        const biweeklyIndex = pathSegments.indexOf('biweekly_reports');
-        const projectId = biweeklyIndex > 0 ? pathSegments[biweeklyIndex - 1] : "Unknown";
-        return { id: d.id, projectId, ...d.data() };
-      }));
-    });
+      setGlobalReports(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => console.error("Firestore status_reports listener error:", error));
     const unsubWorkbench = onSnapshot(collection(db, "project_workbench_states"), (snapshot) => {
       setWorkbenchStates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore project_workbench_states listener error:", error));
     const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (snapshot) => {
       setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore raid_matrix listener error:", error));
 
     return () => { 
       unsubProjects(); 
@@ -141,72 +147,122 @@ export default function AviationExecutiveControlRoom() {
 
   // 🟢 2. FILTER DATA STREAMS WITH LIVE FALLBACK CONSTRAINTS
   const activeProjectIds = useMemo(() => {
-    // If no projects match the active program filter sidebar, default to all available projects
-    if (filteredProjects.length === 0) return allProjects.map(p => p.id);
+    if (activeProgram === "ALL" && selectedProjectIds.length === 0) return allProjects.map(p => p.id);
     return filteredProjects.map(p => p.id);
-  }, [filteredProjects, allProjects]);
-
-  const filteredRollups = useMemo(() => {
-    // If no specific buttons are highlighted, let all telemetry rolls pass through safely
-    if (selectedProjectIds.length === 0 && activeProgram === "ALL") return rollups;
-    return rollups.filter(r => activeProjectIds.includes(r.projectId) || activeProjectIds.includes(r.id));
-  }, [rollups, activeProjectIds, selectedProjectIds, activeProgram]);
-
-  const filteredGlobalReports = useMemo(() => {
-    // Prevents the historical status reports archive table from going blank
-    if (selectedProjectIds.length === 0 && activeProgram === "ALL") return globalReports;
-    return globalReports.filter(r => activeProjectIds.includes(r.projectId));
-  }, [globalReports, activeProjectIds, selectedProjectIds, activeProgram]);
+  }, [filteredProjects, allProjects, activeProgram, selectedProjectIds]);
 
   const calculateVarianceDays = (base: string, forecast: string) => {
     if (!base || !forecast) return 0;
     return Math.round((new Date(forecast).getTime() - new Date(base).getTime()) / 86400000);
   };
 
+  const filteredRollups = useMemo(() => {
+    return filteredProjects.map(project => {
+      const wState = workbenchStates.find(s => s.id === project.id || s.projectId === project.id);
+      const rollupDoc = rollups.find(r => r.id === project.id);
+      
+      const currentRisksText = rollupDoc?.currentRisksText || "";
+      const mitigationPlanText = rollupDoc?.mitigationPlanText || "Pending Review";
+      
+      if (wState) {
+        const plannedValue = wState.evm?.plannedValue ?? 0;
+        const earnedValue = wState.evm?.earnedValue ?? 0;
+        const actualCost = wState.evm?.actualCost ?? 0;
+        
+        const costVariance = earnedValue - actualCost;
+        const scheduleVariance = earnedValue - plannedValue;
+        
+        const cpi = actualCost > 0 ? (earnedValue / actualCost) : 1.0;
+        const spi = plannedValue > 0 ? (earnedValue / plannedValue) : 1.0;
+        
+        const criticalBlockersCount = (wState.dependencies || []).filter((d: any) => d.status === "Active Block").length;
+        
+        const totalSlippageDays = (wState.milestones || []).reduce((sum: number, m: any) => {
+          const slip = calculateVarianceDays(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate);
+          return sum + (slip > 0 ? slip : 0);
+        }, 0);
+
+        return {
+          id: project.id,
+          projectId: project.id,
+          projectName: project.name,
+          program: project.program,
+          budget: project.budget ?? 0,
+          cpi,
+          spi,
+          costVariance,
+          scheduleVariance,
+          statusHealthIndicator: wState.statusHealthIndicator || (costVariance < 0 || totalSlippageDays > 14 || spi < 1 ? "Critical Risk" : "On Track"),
+          criticalBlockersCount,
+          totalSlippageDays,
+          lastSignOffBy: wState.lastSavedBy || "System",
+          lastSignOffAt: wState.lastSavedAt || null,
+          latestPeriod: wState.lastSavedAt ? `Saved ${formatTimestamp(wState.lastSavedAt)}` : "No PM sync",
+          currentRisksText,
+          mitigationPlanText,
+          evmMetrics: { plannedValue, earnedValue, actualCost }
+        };
+      } else {
+        return {
+          id: project.id,
+          projectId: project.id,
+          projectName: project.name,
+          program: project.program,
+          budget: project.budget ?? 0,
+          cpi: 1.00,
+          spi: 1.00,
+          costVariance: 0,
+          scheduleVariance: 0,
+          statusHealthIndicator: "On Track",
+          criticalBlockersCount: 0,
+          totalSlippageDays: 0,
+          lastSignOffBy: "N/A",
+          lastSignOffAt: null,
+          latestPeriod: "Nominal Path Conditions",
+          currentRisksText,
+          mitigationPlanText,
+          evmMetrics: { plannedValue: 0, earnedValue: 0, actualCost: 0 }
+        };
+      }
+    });
+  }, [filteredProjects, workbenchStates, rollups]);
+
+  const filteredGlobalReports = useMemo(() => {
+    // Prevents the historical status reports archive table from going blank
+    if (selectedProjectIds.length === 0 && activeProgram === "ALL") return globalReports;
+    return globalReports.filter(r => Boolean(r.projectId && activeProjectIds.includes(r.projectId)));
+  }, [globalReports, activeProjectIds, selectedProjectIds, activeProgram]);
+
   // 🟢 3. DERIVE DYNAMIC MILESTONES & DEPENDENCIES FROM LIVE PM WORKBENCHES
   const { activeMilestones, activeDependenciesList } = useMemo(() => {
-    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id) || Boolean(s.projectId && activeProjectIds.includes(s.projectId)));
 
     const milestones = activeStates.flatMap(s => 
       (s.milestones || []).map((m: any) => ({
         ...m,
-        projectId: s.id
+        projectId: s.projectId || s.id
       }))
-    ).filter(m => m.status !== "Complete");
+    );
 
     const deps = activeStates.flatMap(s => 
       (s.dependencies || []).map((d: any) => ({
         ...d,
-        projectId: s.id
+        projectId: s.projectId || s.id
       }))
     );
 
     return { activeMilestones: milestones, activeDependenciesList: deps };
   }, [workbenchStates, activeProjectIds]);
 
-  // 🟢 CALENDAR TIMELINE DATE PROJECTION WINDOW WINDOW (CALENDAR BINDING MODULE)
-  const timelineWindow = useMemo(() => {
-    const minTime = new Date(calendarBounds.startDateStr).getTime();
-    const maxTime = new Date(calendarBounds.endDateStr).getTime();
-    
-    return {
-      minTime,
-      maxTime,
-      startLabel: new Date(calendarBounds.startDateStr).toLocaleDateString(undefined, { year: 'numeric', quarter: 'short' } as any) || calendarBounds.startDateStr,
-      endLabel: new Date(calendarBounds.endDateStr).toLocaleDateString(undefined, { year: 'numeric', quarter: 'short' } as any) || calendarBounds.endDateStr
-    };
-  }, [calendarBounds]);
+  const filteredMilestones = useMemo(() => {
+    if (milestoneStatusFilter === "ALL") return activeMilestones;
+    return activeMilestones.filter(m => m.status === milestoneStatusFilter);
+  }, [activeMilestones, milestoneStatusFilter]);
 
-  // Reactive coordinate chart projection tool running on precise calendar timelines
-  const getPos = useMemo(() => {
-    const { minTime, maxTime } = timelineWindow;
-    return (dateStr: string) => {
-      if (!dateStr) return -10;
-      const t = new Date(dateStr).getTime();
-      if (t < minTime || t > maxTime) return -100; // flag off-screen milestone markers cleanly
-      return Math.max(0, Math.min(100, ((t - minTime) / (maxTime - minTime)) * 100));
-    };
-  }, [timelineWindow]);
+  const filteredDependencies = useMemo(() => {
+    if (dependencyStatusFilter === "ALL") return activeDependenciesList;
+    return activeDependenciesList.filter(d => d.status === dependencyStatusFilter);
+  }, [activeDependenciesList, dependencyStatusFilter]);
 
   // 🟢 4. RECALCULATE KPIs WITH LIVE CONSTRAINTS
   const totalMasterBudget = allProjects.reduce((acc, curr) => acc + (curr.budget || 0), 0) || 1;
@@ -216,7 +272,7 @@ export default function AviationExecutiveControlRoom() {
 
   // Sum the quantity of milestones in live project_workbench_states matching type === "Construction" and showOnDashboard === true
   const constructionDependenciesCount = useMemo(() => {
-    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id) || Boolean(s.projectId && activeProjectIds.includes(s.projectId)));
     let count = 0;
     activeStates.forEach(s => {
       (s.milestones || []).forEach((m: any) => {
@@ -236,7 +292,7 @@ export default function AviationExecutiveControlRoom() {
     const startYear = new Date(calendarBounds.startDateStr).getFullYear() || 2024;
     const endYear = new Date(calendarBounds.endDateStr).getFullYear() || 2027;
     
-    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id));
+    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id) || Boolean(s.projectId && activeProjectIds.includes(s.projectId)));
     
     const points = [];
     const totalYears = Math.max(1, endYear - startYear);
@@ -263,11 +319,11 @@ export default function AviationExecutiveControlRoom() {
   // 🟢 6. DYNAMIC ACTIVE THREAT FILTERING (RAID MATRIX COUPLING)
   const dynamicRisks = useMemo(() => {
     const list = raidItems.filter(item => {
-      const projectMatches = activeProjectIds.includes(item.projectId);
+      const projectMatches = Boolean(item.projectId && activeProjectIds.includes(item.projectId));
       if (!projectMatches) return false;
 
       // Exclude items that are resolved or closed
-      const isResolved = ["Resolved", "Resolved - Complete", "Closed"].includes(item.status);
+      const isResolved = ["Resolved", "Resolved - Complete", "Closed"].includes(item.status || "");
       if (isResolved) return false;
 
       // Ensure classification or type is explicitly "Risk"
@@ -405,321 +461,15 @@ export default function AviationExecutiveControlRoom() {
         </Card>
       </div>
 
-      {/* LIVE PROJECT TELEMETRY */}
-      <Card className="border-slate-200 shadow-sm rounded-sm bg-white border-l-4 border-l-[#142E88]">
-        <CardHeader className="bg-slate-50 border-b py-3">
-          <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-            <Activity className="h-4 w-4 text-[#142E88]" /> Live Project Telemetry (PM Workbench Sync)
-          </CardTitle>
-          <CardDescription className="text-[11px]">Real-time ingestion of EVM and Schedule data locked by Project Managers.</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0 overflow-x-auto">
-          {filteredRollups.length === 0 ? (
-            <div className="p-10 text-center text-slate-400 text-sm italic bg-white">No active telemetry found for the selected filter combination.</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent bg-slate-50/50 border-b-slate-200">
-                  <TableHead className="text-xs font-bold text-slate-800 py-3 pl-6">Project Context</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800">Health Indicator</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800">Perf. Ratios (CPI / SPI)</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800 text-right">Cost Variance (CV)</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800 text-right">Sch. Variance (SV)</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800 text-center">Milestone Slip</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800 text-center">Blockers</TableHead>
-                  <TableHead className="text-xs font-bold text-slate-800 text-right pr-6">Last PM Sign-Off</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredRollups.map((project) => (
-                  <TableRow key={project.id} className="hover:bg-slate-50/80 transition-colors bg-white">
-                    <TableCell className="pl-6 py-3"><p className="text-sm font-bold text-[#142E88]">{project.projectName}</p><p className="text-[10px] text-slate-500 font-mono mt-0.5 truncate w-48">Latest: {project.latestPeriod}</p></TableCell>
-                    <TableCell>
-                      {project.statusHealthIndicator === "Critical Risk" ? <Badge className="bg-red-50 text-red-700 border border-red-200 shadow-none font-bold text-[10px] py-0.5 gap-1"><AlertTriangle className="h-3 w-3" /> Critical Risk</Badge> : <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-none font-bold text-[10px] py-0.5 gap-1"><CheckCircle2 className="h-3 w-3" /> On Track</Badge>}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-0.5 font-mono text-[11px] font-bold">
-                        <div><span className="text-slate-400 font-sans mr-1 font-normal">CPI:</span> <span className={project.cpi >= 1 ? 'text-emerald-600' : 'text-red-600'}>{project.cpi?.toFixed(2) || "0.00"}</span></div>
-                        <div><span className="text-slate-400 font-sans mr-1 font-normal">SPI:</span> <span className={project.spi >= 1 ? 'text-emerald-600' : 'text-red-600'}>{project.spi?.toFixed(2) || "0.00"}</span></div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right"><span className={`text-sm font-bold font-mono ${project.costVariance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>${(project.costVariance || 0).toLocaleString()}</span></TableCell>
-                    <TableCell className="text-right"><span className={`text-sm font-bold font-mono ${project.scheduleVariance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>${(project.scheduleVariance || 0).toLocaleString()}</span></TableCell>
-                    <TableCell className="text-center"><span className={`text-xs font-bold px-2 py-1 rounded-sm ${project.totalSlippageDays > 14 ? 'bg-red-100 text-red-700' : project.totalSlippageDays > 0 ? 'bg-amber-100 text-amber-700' : 'text-slate-500'}`}>{project.totalSlippageDays > 0 ? `+${project.totalSlippageDays} Days` : '--'}</span></TableCell>
-                    <TableCell className="text-center"><span className={`text-xs font-bold px-2 py-1 rounded-sm ${project.criticalBlockersCount > 0 ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'text-slate-300'}`}>{project.criticalBlockersCount > 0 ? project.criticalBlockersCount : '0'}</span></TableCell>
-                    <TableCell className="text-right pr-6"><div className="text-xs font-medium text-slate-700">{project.lastSignOffBy?.split("@")[0]}</div><div className="flex items-center justify-end gap-1 text-[9px] text-slate-400 font-mono mt-0.5"><Clock className="h-2.5 w-2.5" />{formatTimestamp(project.lastSignOffAt)}</div></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <LiveProjectTelemetryTable projects={filteredRollups} formatTimestamp={formatTimestamp} />
 
-      {/* DYNAMIC PORTFOLIO TIMELINE (GANTT PHASES + NESTED MILESTONES) */}
-      <Card className="border-slate-200 shadow-sm rounded-sm bg-white mt-6">
-        <CardHeader className="bg-slate-50 border-b py-3 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <CardTitle className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-              <Activity className="h-4 w-4 text-[#142E88]" /> Dynamic Portfolio Timeline
-            </CardTitle>
-            <CardDescription className="text-[11px]">Real-time spatial phase bars and trade milestone nodes synced from PM Workbenches.</CardDescription>
-          </div>
-          
-          {/* 🆕 ENHANCEMENT 1: DYNAMIC PORTFOLIO CALENDAR BINDING WIDGET */}
-          <div className="flex flex-wrap items-center gap-3 bg-white p-2 border border-slate-200 shadow-xs text-xs font-semibold rounded-sm">
-            <div className="flex items-center gap-1.5">
-              <label className="text-slate-500 font-mono text-[10px] uppercase font-bold">Start Window:</label>
-              <input 
-                type="date"
-                value={calendarBounds.startDateStr}
-                onChange={(e) => setCalendarBounds(prev => ({ ...prev, startDateStr: e.target.value }))}
-                className="border rounded px-2 py-1 bg-white text-slate-900 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-              />
-            </div>
-            
-            <div className="flex items-center gap-1.5">
-              <label className="text-slate-500 font-mono text-[10px] uppercase font-bold">End Horizon:</label>
-              <input 
-                type="date"
-                value={calendarBounds.endDateStr}
-                onChange={(e) => setCalendarBounds(prev => ({ ...prev, endDateStr: e.target.value }))}
-                className="border rounded px-2 py-1 bg-white text-slate-900 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-              />
-            </div>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-[10px] font-mono font-bold text-slate-400 hover:text-slate-600 px-2 cursor-pointer"
-              onClick={() => {
-                const today = new Date();
-                let startQuarterMonth = 0;
-                if (today.getMonth() >= 3 && today.getMonth() <= 5) startQuarterMonth = 3;
-                else if (today.getMonth() >= 6 && today.getMonth() <= 8) startQuarterMonth = 6;
-                else if (today.getMonth() >= 9 && today.getMonth() <= 11) startQuarterMonth = 9;
-                
-                const startObj = new Date(today.getFullYear(), startQuarterMonth, 1);
-                const endObj = new Date(startObj.getTime());
-                endObj.setMonth(endObj.getMonth() + 9);
-                endObj.setDate(endObj.getDate() - 1);
-
-                setCalendarBounds({
-                  startDateStr: startObj.toISOString().split('T')[0],
-                  endDateStr: endObj.toISOString().split('T')[0]
-                });
-              }}
-            >
-              🔄 Reset Default
-            </Button>
-          </div>
-        </CardHeader>
-        
-        {/* 🪲 BUG 3 DISMISS CLIPPING: Extended bottom space and allowed tooltip overflow visibility */}
-        <CardContent className="p-6 pb-32 space-y-8 relative overflow-visible">
-          
-          {/* Timeline Horizon Boundary Labels */}
-          <div className="absolute inset-x-6 top-2 flex justify-between text-[10px] font-mono font-black text-slate-400 z-30">
-            <span className="text-[#142E88] font-bold">{timelineWindow.startLabel}</span>
-            <span className="text-slate-400 font-normal">Zoom Window Bounds</span>
-            <span className="text-[#142E88] font-bold">{timelineWindow.endLabel}</span>
-          </div>
-
-          {/* 🆕 DYNAMIC BACKGROUND TIMELINE GRID LINES ENGINE */}
-          <div className="absolute inset-x-6 top-10 bottom-10 pointer-events-none flex justify-between z-0">
-            {(() => {
-              const start = new Date(calendarBounds.startDateStr);
-              const end = new Date(calendarBounds.endDateStr);
-              
-              const totalDays = Math.max(1, (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-              
-              const lineCount = 4;
-              const intervals = [];
-              
-              for (let i = 0; i <= lineCount; i++) {
-                const targetFactor = i / lineCount;
-                const incrementalDate = new Date(start.getTime() + (totalDays * targetFactor * 24 * 60 * 60 * 1000));
-                
-                const displayLabel = incrementalDate.toLocaleDateString(undefined, { 
-                  month: 'short', 
-                  year: 'numeric' // Swapped to full year to make it even easier to read
-                });
-                
-                intervals.push({
-                  positionPercent: targetFactor * 100,
-                  label: displayLabel
-                });
-              }
-
-              return intervals.map((item, idx) => (
-                <div 
-                  key={`grid-line-${idx}`} 
-                  className="absolute top-0 bottom-0 flex flex-col items-center h-full"
-                  style={{ left: `${item.positionPercent}%`, transform: 'translateX(-50%)' }}
-                >
-                  {/* Hardened vertical column alignment marker (slightly darker border for visibility) */}
-                  <div className="h-full border-l border-dashed border-slate-300 w-px" />
-                  
-                  {/* 👓 ACCESSIBILITY FIX: Larger text, bold weight, and crisp light charcoal gray background */}
-                  <span className="text-xs font-mono font-black text-white bg-slate-700 px-2 py-1 rounded shadow-md mt-2 border border-slate-800 tracking-wide z-10">
-                    {item.label}
-                  </span>
-                </div>
-              ));
-            })()}
-          </div>
-
-          {(() => {
-            const tdpMilestones = activeMilestones.filter(m => {
-              const proj = allProjects.find(p => p.id === m.projectId);
-              return proj?.program?.toUpperCase().trim() === "TDP";
-            });
-            const cipMilestones = activeMilestones.filter(m => {
-              const proj = allProjects.find(p => p.id === m.projectId);
-              return proj?.program?.toUpperCase().trim() === "CIP";
-            });
-            const mappedDependencies = activeDependenciesList.map(dep => {
-              const linked = activeMilestones.find(m => m.name === dep.linkedMilestone && m.projectId === dep.projectId);
-              return { ...dep, date: linked ? linked.forecastEnd || linked.baselineEnd : null };
-            }).filter(d => d.date);
-
-            return (
-              <div className="pt-8 space-y-8">
-                {/* TDP TRACK */}
-                <div className="space-y-2 relative">
-                  <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest block font-mono">TDP Track Rail (Milestones)</span>
-                  <div className="h-1.5 bg-slate-100 rounded-full relative w-full flex items-center">
-                    {tdpMilestones.map((m, i) => {
-                      const leftPercent = getPos(m.forecastEnd || m.baselineEnd);
-                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
-
-                      const parentProject = allProjects.find(p => p.id === m.projectId);
-                      const projectName = parentProject ? parentProject.name : "Unknown Project";
-                      const variance = calculateVarianceDays(m.baselineEnd, m.forecastEnd);
-
-                      return (
-                        <div key={`tdp-${i}`} className="group/milestone absolute h-3.5 w-3.5 rounded-full bg-blue-600 border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30" style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
-                          {/* 🪲 BUG 3 DISMISS CLIPPING: Changed from bottom-full to top-full to drop downward */}
-                          <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
-                            <div className="flex items-center justify-between border-b border-slate-700 pb-1">
-                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{m.projectId}</span>
-                               <span className="bg-slate-800 text-slate-300 font-bold px-1 py-0.5 rounded text-[9px] uppercase font-sans">{m.status}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
-                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Milestone</span>
-                               <span className="text-slate-100 font-medium font-sans">{m.name}</span>
-                             </div>
-                             <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-[10px]">
-                               <div>
-                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">End Date</span>
-                                 <span className="font-mono font-medium text-slate-200">{m.forecastEnd || m.baselineEnd || "N/A"}</span>
-                               </div>
-                               <div>
-                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Variance</span>
-                                 <span className={`font-mono font-bold ${variance > 0 ? "text-red-400" : variance < 0 ? "text-emerald-400" : "text-slate-300"}`}>
-                                   {variance > 0 ? `+${variance}d` : `${variance}d`}
-                                 </span>
-                               </div>
-                             </div>
-                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* DEPENDENCIES TRACK */}
-                <div className="space-y-2 relative">
-                  <span className="text-[10px] font-black text-emerald-700 uppercase tracking-widest block font-mono">Cross-Track Dependencies & Blockers</span>
-                  <div className="h-1 bg-emerald-50 rounded-full relative w-full flex items-center border border-emerald-100/50">
-                    {mappedDependencies.map((dep, i) => {
-                      const leftPercent = getPos(dep.date);
-                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
-
-                      const parentProject = allProjects.find(p => p.id === dep.projectId);
-                      const projectName = parentProject ? parentProject.name : "Unknown Project";
-
-                      return (
-                        <div key={`dep-${i}`} className={`group/milestone absolute h-3.5 w-3.5 rounded-sm border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30 ${dep.status === 'Active Block' ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
-                          {/* 🪲 BUG 3 DISMISS CLIPPING: Pushed tooltip layout down */}
-                          <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
-                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
-                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{dep.projectId}</span>
-                               <span className={`font-bold px-1.5 py-0.5 rounded text-[9px] uppercase font-sans ${dep.status === 'Active Block' ? 'bg-red-950 text-red-400' : 'bg-emerald-950 text-emerald-400'}`}>{dep.status}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
-                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Target Entity</span>
-                               <span className="text-slate-100 font-medium font-sans">{dep.targetEntity}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Task / Activity</span>
-                               <span className="text-slate-200 font-normal font-sans text-[10px] leading-tight block">{dep.activityTask || "Unspecified"}</span>
-                             </div>
-                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* CIP TRACK */}
-                <div className="space-y-2 relative">
-                  <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest block font-mono">CIP Track Rail (Milestones)</span>
-                  <div className="h-1.5 bg-slate-100 rounded-full relative w-full flex items-center">
-                    {cipMilestones.map((m, i) => {
-                      const leftPercent = getPos(m.forecastEnd || m.baselineEnd);
-                      if (leftPercent < 0 || leftPercent > 100) return null; // Truncate milestones outside visible window
-
-                      const parentProject = allProjects.find(p => p.id === m.projectId);
-                      const projectName = parentProject ? parentProject.name : "Unknown Project";
-                      const variance = calculateVarianceDays(m.baselineEnd, m.forecastEnd);
-
-                      return (
-                        <div key={`cip-${i}`} className="group/milestone absolute h-3.5 w-3.5 rounded-full bg-purple-600 border-2 border-white shadow-xs cursor-help hover:scale-125 transition-all z-10 hover:z-30" style={{ left: `${leftPercent}%`, transform: 'translateX(-50%)' }}>
-                           <div className="opacity-0 invisible group-hover/milestone:opacity-100 group-hover/milestone:visible absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[11px] p-3 rounded shadow-xl border border-slate-700 pointer-events-none transition-all duration-200 z-50 w-64 space-y-1.5 leading-normal">
-                             <div className="flex items-center justify-between border-b border-slate-700 pb-1">
-                               <span className="font-mono font-bold text-[#1EA7F4] text-[10px]">{m.projectId}</span>
-                               <span className="bg-slate-800 text-slate-300 font-bold px-1 py-0.5 rounded text-[9px] uppercase font-sans">{m.status}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Project Name</span>
-                               <span className="text-slate-100 font-semibold font-sans">{projectName}</span>
-                             </div>
-                             <div>
-                               <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Milestone</span>
-                               <span className="text-slate-100 font-medium font-sans">{m.name}</span>
-                             </div>
-                             <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-[10px]">
-                               <div>
-                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">End Date</span>
-                                 <span className="font-mono font-medium text-slate-200">{m.forecastEnd || m.baselineEnd || "N/A"}</span>
-                               </div>
-                               <div>
-                                 <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Variance</span>
-                                 <span className={`font-mono font-bold ${variance > 0 ? "text-red-400" : variance < 0 ? "text-emerald-400" : "text-slate-300"}`}>
-                                   {variance > 0 ? `+${variance}d` : `${variance}d`}
-                                 </span>
-                               </div>
-                             </div>
-                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-        </CardContent>
-      </Card>
+      <DynamicPortfolioTimeline
+        projects={filteredProjects}
+        milestones={activeMilestones}
+        dependencies={activeDependenciesList}
+        dateWindow={calendarBounds}
+        onDateWindowChange={setCalendarBounds}
+      />
 
       {/* MILESTONE & DEPENDENCY TABLES */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6">
@@ -729,29 +479,51 @@ export default function AviationExecutiveControlRoom() {
               <Clock className="h-4 w-4 text-emerald-600" /> Active Global Milestones
             </CardTitle>
             <CardDescription className="text-[11px]">Aggregated baseline vs. forecast timelines from all active projects.</CardDescription>
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {TABLE_STATUS_FILTERS.map(status => (
+                <Button key={status} type="button" variant="outline" size="sm" onClick={() => setMilestoneStatusFilter(status)} className={`h-6 px-2 text-[9px] font-bold ${milestoneStatusFilter === status ? "bg-[#142E88] text-white border-[#142E88] hover:bg-[#142E88] hover:text-white" : "bg-white text-slate-600"}`}>
+                  {status}
+                </Button>
+              ))}
+            </div>
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto max-h-[350px] overflow-y-auto">
-            {activeMilestones.length === 0 ? <div className="p-8 text-center text-slate-400 text-xs italic">No active milestones found in recent reports.</div> : (
+            {filteredMilestones.length === 0 ? <div className="p-8 text-center text-slate-400 text-xs italic">No milestones match the selected status.</div> : (
               <Table>
                 <TableHeader className="sticky top-0 bg-slate-100/90 backdrop-blur-sm z-10">
                   <TableRow>
                     <TableHead className="text-[10px] font-bold uppercase">Project</TableHead>
                     <TableHead className="text-[10px] font-bold uppercase">Milestone</TableHead>
-                    <TableHead className="text-[10px] font-bold uppercase">Forecast End</TableHead>
+                    <TableHead className="text-[10px] font-bold uppercase">Baseline End</TableHead>
+                    <TableHead className="text-[10px] font-bold uppercase">Forecast / Actual End</TableHead>
                     <TableHead className="text-[10px] font-bold uppercase">Variance</TableHead>
                     <TableHead className="text-[10px] font-bold uppercase">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {workbenchStates.flatMap(s => (s.milestones || []).map((m: any) => ({ ...m, projectId: s.id }))).map((m: any, i) => {
-                    const variance = calculateVarianceDays(m.baselineEndDate, m.forecastEndDate);
+                  {filteredMilestones.map((m: any, i) => {
+                    const baseDate = m.baselineEnd || m.baselineEndDate;
+                    const forecastDate = m.forecastEnd || m.forecastEndDate;
+                    const variance = calculateVarianceDays(baseDate, forecastDate);
+                    const isCompleted = m.status === 'Complete';
+                    
                     return (
                       <TableRow key={i} className="hover:bg-slate-50/50">
                         <TableCell className="text-xs font-bold text-[#142E88] font-mono">{m.projectId}</TableCell>
                         <TableCell className="text-xs font-semibold">{m.tradeMilestone || m.name}</TableCell>
-                        <TableCell className="text-[10px] font-mono">{m.forecastEndDate || "N/A"}</TableCell>
+                        <TableCell className="text-[10px] font-mono">{baseDate || "N/A"}</TableCell>
+                        <TableCell className="text-[10px] font-mono">{forecastDate || "N/A"}</TableCell>
                         <TableCell><span className={`text-[10px] font-bold font-mono ${variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
-                        <TableCell><Badge variant="outline" className="text-[9px] shadow-none bg-white">{m.status}</Badge></TableCell>
+                        <TableCell>
+                          <Badge 
+                            variant="outline" 
+                            className={`text-[9px] shadow-none ${
+                              isCompleted ? 'bg-emerald-50 text-emerald-700 border-emerald-200 font-bold' : 'bg-white text-slate-700'
+                            }`}
+                          >
+                            {isCompleted ? '🟢 Complete' : m.status}
+                          </Badge>
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -767,9 +539,16 @@ export default function AviationExecutiveControlRoom() {
               <GitMerge className="h-4 w-4 text-[#885BCE]" /> Active Global Dependencies
             </CardTitle>
             <CardDescription className="text-[11px]">Cross-project and trade blocks aggregated from all active tracks.</CardDescription>
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {TABLE_STATUS_FILTERS.map(status => (
+                <Button key={status} type="button" variant="outline" size="sm" onClick={() => setDependencyStatusFilter(status)} className={`h-6 px-2 text-[9px] font-bold ${dependencyStatusFilter === status ? "bg-[#142E88] text-white border-[#142E88] hover:bg-[#142E88] hover:text-white" : "bg-white text-slate-600"}`}>
+                  {status}
+                </Button>
+              ))}
+            </div>
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto max-h-[350px] overflow-y-auto">
-            {activeDependenciesList.length === 0 ? <div className="p-8 text-center text-slate-400 text-xs italic">No active dependencies found in recent reports.</div> : (
+            {filteredDependencies.length === 0 ? <div className="p-8 text-center text-slate-400 text-xs italic">No dependencies match the selected status.</div> : (
               <Table>
                 <TableHeader className="sticky top-0 bg-slate-100/90 backdrop-blur-sm z-10">
                   <TableRow>
@@ -780,7 +559,7 @@ export default function AviationExecutiveControlRoom() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {activeDependenciesList.map((d: any, i) => (
+                  {filteredDependencies.map((d: any, i) => (
                     <TableRow key={i} className="hover:bg-slate-50/50">
                       <TableCell className="text-xs font-bold text-[#142E88] font-mono">{d.projectId}</TableCell>
                       <TableCell className="text-xs font-medium text-slate-700">{d.targetEntity}</TableCell>
@@ -822,80 +601,12 @@ export default function AviationExecutiveControlRoom() {
           </CardContent>
         </Card>
 
-        {/* DYNAMIC RISK REGISTER AREA CONNECTED TO BI-WEEKLY LOGS */}
-        <Card className="border-slate-200 shadow-sm rounded-sm bg-white mt-4">
-          <CardHeader className="bg-slate-50 border-b py-2.5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-              Active Threat Risk Register
-            </CardTitle>
-            
-            {/* 🆕 PHASE 3 INTERACTIVE SEVERITY FILTER CONTROLLER WITH COUNTS CONTROLLER */}
-            <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-sm border border-slate-200 self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={() => setSeveritySelection("ALL")}
-                className={`px-2 py-0.5 rounded-xs text-[10px] font-mono font-bold border transition-all cursor-pointer ${
-                  severitySelection === "ALL" 
-                    ? "bg-[#142E88] text-white border-[#142E88]" 
-                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
-                }`}
-              >
-                ALL ({dynamicRisks.length})
-              </button>
-              {["Critical", "Mandatory", "High"].map((level) => {
-                const countNum = dynamicRisks.filter((r: any) => (r.impact || r.importance) === level).length;
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => setSeveritySelection(level)}
-                    className={`px-2 py-0.5 rounded-xs text-[10px] font-mono font-bold border transition-all cursor-pointer ${
-                      severitySelection === level 
-                        ? "bg-[#142E88] text-white border-[#142E88]" 
-                        : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
-                    }`}
-                  >
-                    {level.toUpperCase()} <span className="ml-0.5 opacity-75">({countNum})</span>
-                  </button>
-                );
-              })}
-            </div>
-          </CardHeader>
-          
-          <CardContent className="p-4 space-y-3">
-            {dynamicRisks.filter((risk: any) => severitySelection === "ALL" || (risk.impact || risk.importance) === severitySelection).length === 0 ? (
-              <div className="text-center text-slate-400 text-xs italic py-10">
-                No matching threats currently registered in PM status updates.
-              </div>
-            ) : (
-              dynamicRisks
-                .filter((risk: any) => severitySelection === "ALL" || (risk.impact || risk.importance) === severitySelection)
-                .map((risk: any) => (
-                  <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                        {risk.id} 
-                        <Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge>
-                        <span 
-                          className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase tracking-wider font-sans shrink-0 shadow-xs"
-                          style={{ backgroundColor: STATUS_COLORS[risk.roamCategory] || STATUS_COLORS[risk.status] || '#EF4444' }}
-                        >
-                          {risk.roamCategory}
-                        </span>
-                      </span>
-                      <Badge className={`text-[9px] font-bold rounded-xs shadow-none ${
-                        (risk.impact || risk.importance) === 'Critical' ? 'bg-red-50 text-red-700 border-red-200' : 
-                        (risk.impact || risk.importance) === 'Mandatory' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200'
-                      }`}>
-                        {risk.impact || risk.importance}
-                      </Badge>
-                    </div>
-                    <h4 className="font-semibold text-slate-700 leading-tight font-sans">{risk.threat}</h4>
-                  </div>
-                ))
-            )}
-          </CardContent>
-        </Card>
+        <ActiveThreatRiskRegister
+          risks={dynamicRisks}
+          severity={severitySelection}
+          onSeverityChange={setSeveritySelection}
+          statusColors={STATUS_COLORS}
+        />
       </div>
 
       {/* GLOBAL STATUS REPORTS ARCHIVE */}
@@ -925,14 +636,14 @@ export default function AviationExecutiveControlRoom() {
                 <TableBody>
                   {paginatedReports.map(report => (
                     <TableRow key={report.id} className="hover:bg-slate-50/50 transition-colors">
-                      <TableCell className="text-xs font-mono font-medium text-slate-700">{formatTimestamp(report.timestamp)}</TableCell>
-                      <TableCell className="text-xs font-bold text-[#142E88] font-mono">{report.projectId}</TableCell>
-                      <TableCell className="text-xs font-semibold text-slate-700">{report.reportingPeriod}</TableCell>
-                      <TableCell className="text-xs text-slate-500">{report.loggedBy?.split("@")[0]}</TableCell>
+                      <TableCell className="text-xs font-mono font-medium text-slate-700">{formatTimestamp(report.createdAt || report.timestamp)}</TableCell>
+                      <TableCell className="text-xs font-bold text-[#142E88] font-mono">{report.projectName || report.projectId}</TableCell>
+                      <TableCell className="text-xs font-semibold text-slate-700">{report.reportPeriod || report.reportingPeriod}</TableCell>
+                      <TableCell className="text-xs text-slate-500">{(report.submittedBy || report.loggedBy)?.split("@")[0]}</TableCell>
                       <TableCell className="text-xs font-mono font-bold">
-                        <span className={getEvmColorClass(report.evmMetrics?.spi)}>SPI: {report.evmMetrics?.spi || 'N/A'}</span>
+                        <span className={getEvmColorClass(report.spi ?? report.evmMetrics?.spi)}>SPI: {formatEvmMetric(report.spi ?? report.evmMetrics?.spi)}</span>
                         <span className="text-slate-300 mx-2">|</span>
-                        <span className={getEvmColorClass(report.evmMetrics?.cpi)}>CPI: {report.evmMetrics?.cpi || 'N/A'}</span>
+                        <span className={getEvmColorClass(report.cpi ?? report.evmMetrics?.cpi)}>CPI: {formatEvmMetric(report.cpi ?? report.evmMetrics?.cpi)}</span>
                       </TableCell>
                       <TableCell className="text-right">
                         <Button 
@@ -1128,15 +839,15 @@ export default function AviationExecutiveControlRoom() {
             <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto bg-slate-50/50">
               {/* Header Meta */}
               <div className="grid grid-cols-4 gap-4 pb-4 border-b border-slate-200 bg-white p-4 rounded-sm shadow-xs">
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Reporting Period</span><span className="text-sm font-semibold text-[#142E88]">{viewingSnapshot.reportingPeriod}</span></div>
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Submitted By</span><span className="text-sm font-semibold text-slate-800">{viewingSnapshot.loggedBy?.split('@')[0]}</span></div>
-                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Date Logged</span><span className="text-sm font-mono font-bold text-slate-800">{formatTimestamp(viewingSnapshot.timestamp)}</span></div>
+                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Reporting Period</span><span className="text-sm font-semibold text-[#142E88]">{viewingSnapshot.reportPeriod || viewingSnapshot.reportingPeriod}</span></div>
+                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Submitted By</span><span className="text-sm font-semibold text-slate-800">{(viewingSnapshot.submittedBy || viewingSnapshot.loggedBy)?.split('@')[0]}</span></div>
+                <div><span className="block text-[10px] font-bold text-slate-500 uppercase">Date Logged</span><span className="text-sm font-mono font-bold text-slate-800">{formatTimestamp(viewingSnapshot.createdAt || viewingSnapshot.timestamp)}</span></div>
                 <div>
                   <span className="block text-[10px] font-bold text-slate-500 uppercase">EVM Performance</span>
                   <div className="text-sm font-mono font-bold">
-                    <span className={getEvmColorClass(viewingSnapshot.evmMetrics?.spi)}>SPI: {viewingSnapshot.evmMetrics?.spi || 'N/A'}</span>
+                    <span className={getEvmColorClass(viewingSnapshot.spi ?? viewingSnapshot.evmMetrics?.spi)}>SPI: {formatEvmMetric(viewingSnapshot.spi ?? viewingSnapshot.evmMetrics?.spi)}</span>
                     <span className="mx-2 text-slate-300">|</span>
-                    <span className={getEvmColorClass(viewingSnapshot.evmMetrics?.cpi)}>CPI: {viewingSnapshot.evmMetrics?.cpi || 'N/A'}</span>
+                    <span className={getEvmColorClass(viewingSnapshot.cpi ?? viewingSnapshot.evmMetrics?.cpi)}>CPI: {formatEvmMetric(viewingSnapshot.cpi ?? viewingSnapshot.evmMetrics?.cpi)}</span>
                   </div>
                 </div>
               </div>

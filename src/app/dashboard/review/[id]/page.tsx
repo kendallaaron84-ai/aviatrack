@@ -119,19 +119,19 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       const items = subSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       items.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       setSubObservationsList(items);
-    });
+    }, (error) => console.error("Firestore sub_observations listener error:", error));
 
     const unsubQuestions = onSnapshot(collection(db, "field_observations", id, "portfolio_questions"), (snap) => {
       const qData = snap.docs.map(d => d.data());
       qData.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       setPortfolioQuestionsFeed(qData);
-    });
+    }, (error) => console.error("Firestore portfolio_questions listener error:", error));
 
     const unsubPmComments = onSnapshot(collection(db, "field_observations", id, "pm_comments"), (snap) => {
       const cData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       cData.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       setPmCommentsHistory(cData);
-    });
+    }, (error) => console.error("Firestore pm_comments listener error:", error));
 
     return () => {
       unsubSubObs();
@@ -162,7 +162,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
     if (isReadOnly) return;
     setIsSaving(true);
     
-    toast({ title: "Review Synchronized", description: "Log entries pushed to Firestore & Google Sheets." });
+    toast({ title: "Review Synchronized", description: "Log entries pushed to Firestore." });
     
     try {
       const docRef = doc(db, "field_observations", id);
@@ -195,16 +195,6 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
           statusAtTime: status,
           createdAt: timestamp
         });
-      }
-
-      try {
-        fetch("/api/sync-sheets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, ...updatePayload, comment })
-        });
-      } catch (sheetErr) {
-        console.warn("External Sheets workflow deferred to background sync.");
       }
 
       setComment(""); 

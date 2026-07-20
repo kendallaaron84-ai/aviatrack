@@ -4,31 +4,54 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { initializeApp, getApps, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirebaseAdmin } from "@/lib/firebase-admin";
+import { z } from "zod";
 
-export async function POST() {
+const analyzeRaidRequestSchema = z.object({
+  force: z.boolean().optional(),
+}).strict();
+
+export async function POST(request: Request) {
+  const authorization = request.headers.get("authorization");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let admin;
   try {
-    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-    const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    
-    // 🔐 Clean private key of any hidden enclosing string formatting from environments
-    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-    if (privateKey) {
-      privateKey = privateKey.trim();
-      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-        privateKey = privateKey.slice(1, -1);
-      }
-      privateKey = privateKey.replace(/\\n/g, '\n');
-    }
+    admin = getFirebaseAdmin();
+    await admin.auth.verifyIdToken(token);
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-
-    if (!clientEmail || !privateKey || !projectId) {
-      return NextResponse.json({ 
-        error: "Missing critical Firebase Admin environment variables at runtime." 
+  try {
+    let requestPayload: unknown = {};
+    try {
+      const requestText = await request.text();
+      requestPayload = requestText ? JSON.parse(requestText) : {};
+    } catch {
+      return NextResponse.json({
+        error: "Bad Request",
+        details: { formErrors: ["Request body must contain valid JSON."], fieldErrors: {} },
       }, { status: 400 });
     }
+
+    const validation = analyzeRaidRequestSchema.safeParse(requestPayload);
+    if (!validation.success) {
+      return NextResponse.json({
+        error: "Bad Request",
+        details: validation.error.flatten(),
+      }, { status: 400 });
+    }
+    
+    // 🔐 Clean private key of any hidden enclosing string formatting from environments
+
+    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
     if (!geminiApiKey) {
       return NextResponse.json({
@@ -36,13 +59,7 @@ export async function POST() {
       }, { status: 400 });
     }
 
-    if (getApps().length === 0) {
-      initializeApp({
-        credential: cert({ projectId, clientEmail, privateKey }),
-      });
-    }
-
-    const adminDb = getFirestore();
+    const adminDb = admin.db;
     const ai = new GoogleGenAI({ 
       apiKey: geminiApiKey 
     });

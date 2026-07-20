@@ -26,7 +26,7 @@ export default function PMDashboardPage() {
     // Live Project Counter
     const unsubProjects = onSnapshot(collection(db, "projects"), (snapshot) => {
       setProjectsCount(snapshot.docs.length);
-    });
+    }, (error) => console.error("Firestore projects listener error:", error));
 
     // Live Observations Tracker with Deep Comment Hydration
     const unsubObs = onSnapshot(collection(db, "field_observations"), async (snapshot) => {
@@ -88,7 +88,7 @@ export default function PMDashboardPage() {
       });
 
       setObservations(fullyHydratedObs);
-    });
+    }, (error) => console.error("Firestore field_observations listener error:", error));
 
     return () => { unsubProjects(); unsubObs(); };
   }, []);

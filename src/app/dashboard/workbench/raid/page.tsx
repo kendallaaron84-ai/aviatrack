@@ -21,7 +21,7 @@ export default function RaidMatrixDashboard() {
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "raid_matrix"), (snap) => {
       setRaidItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore raid_matrix listener error:", error));
     return () => unsub();
   }, []);
 

@@ -59,13 +59,13 @@ export default function AdminPortalPage() {
       if (data.length > 0 && !selectedProjectId) {
         setSelectedProjectId(data[0].id); // Auto-select first project
       }
-    });
+    }, (error) => console.error("Firestore admin_projects listener error:", error));
     const unsubKeywords = onSnapshot(collection(db, "config_keywords"), (snap) => {
       setKeywords(snap.docs.map(d => d.id));
-    });
+    }, (error) => console.error("Firestore config_keywords listener error:", error));
     const unsubPrompt = onSnapshot(doc(db, "admin_settings", "risk_matrix_config"), (snap) => {
       if (snap.exists()) setRiskPrompt(snap.data().promptText || "");
-    });
+    }, (error) => console.error("Firestore risk configuration listener error:", error));
     return () => { unsubProj(); unsubKeywords(); unsubPrompt(); };
   }, [selectedProjectId]);
 
@@ -75,18 +75,18 @@ export default function AdminPortalPage() {
 
     const unsubPers = onSnapshot(collection(db, "admin_projects", selectedProjectId, "personnel"), (snap) => {
       setPersonnel(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore project personnel listener error:", error));
 
     const unsubLocs = onSnapshot(collection(db, "admin_projects", selectedProjectId, "locations"), (snap) => {
       setProjectLocations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore project locations listener error:", error));
 
     const activeProj = projects.find(p => p.id === selectedProjectId);
     setWeeklySummary(activeProj?.weeklySummaryText || "");
 
     const unsubSec = onSnapshot(collection(db, "admin_sectors"), (snap) => {
       setSectors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore admin_sectors listener error:", error));
 
     return () => { unsubPers(); unsubLocs(); unsubSec(); };
   }, [selectedProjectId, projects]);

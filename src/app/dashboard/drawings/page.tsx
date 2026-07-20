@@ -56,7 +56,7 @@ export default function AviationBlueprintVault() {
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "project_documentation"), (snapshot) => {
       setDocuments(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore project_documentation listener error:", error));
     return () => unsub();
   }, []); 
 
@@ -198,7 +198,7 @@ export default function AviationBlueprintVault() {
   };
 
   return (
-    <div className="max-w-[1700px] mx-auto space-y-6 pb-12">
+    <div className="max-w-[1800px] mx-auto space-y-6 pb-12 w-full px-4">
       {/* HEADER BAR */}
       <div className="flex items-center justify-between border-b pb-4 bg-white">
         <div className="flex items-center gap-2">
@@ -326,7 +326,7 @@ export default function AviationBlueprintVault() {
                 variant="outline" 
                 className="h-7 text-[11px] font-bold border-slate-200 hover:bg-slate-100 px-2 rounded-xs flex items-center gap-1.5"
               >
-                {isFullscreen ? <>Exit Fullscreen</> : <>Fullscreen Mode</>}
+                {isFullscreen ? <><Minimize2 className="h-3.5 w-3.5" /> Exit Fullscreen</> : <><Maximize2 className="h-3.5 w-3.5" /> Toggle Fullscreen Viewport</>}
               </Button>
             )}
           </CardHeader>
@@ -336,7 +336,7 @@ export default function AviationBlueprintVault() {
               <div className={`space-y-4 ${isFullscreen ? "flex-1 flex flex-col space-y-0 gap-4" : ""}`}>
                 
                 <div className={`w-full border bg-slate-900 rounded-sm flex items-center justify-center relative overflow-hidden group ${
-                  isFullscreen ? "flex-1 h-full" : "h-[500px]"
+                  isFullscreen ? "flex-1 h-full" : "h-[80vh]"
                 }`}>
                   <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-20 pointer-events-none" />
                   

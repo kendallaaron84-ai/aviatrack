@@ -72,7 +72,7 @@ export default function FinancialTrackingPage() {
       if (projs.length > 0 && !selectedProject) {
         setSelectedProject(projs[0].id);
       }
-    });
+    }, (error) => console.error("Firestore admin_projects listener error:", error));
     return () => unsubProjList();
   }, [selectedProject]);
 
@@ -96,7 +96,7 @@ export default function FinancialTrackingPage() {
     const qLedger = query(collection(db, "financials", selectedProject, "ledger"), orderBy("date", "desc"));
     const unsubLedger = onSnapshot(qLedger, (snapshot) => {
       setLedgerEntries(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (error) => console.error("Firestore financial ledger listener error:", error));
 
     const qProcure = query(collection(db, "financials", selectedProject, "procurement_pipeline"), orderBy("timestamp", "desc"));
     const unsubProcure = onSnapshot(qProcure, (snapshot) => {
@@ -105,7 +105,7 @@ export default function FinancialTrackingPage() {
       } else {
         setProcurementEntries([]);
       }
-    });
+    }, (error) => console.error("Firestore procurement pipeline listener error:", error));
 
     return () => { unsubLedger(); unsubProcure(); };
   }, [selectedProject]);

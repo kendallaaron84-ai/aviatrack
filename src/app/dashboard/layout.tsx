@@ -83,7 +83,7 @@ export function GlobalHeaderNotificationHub() {
 
       activeAlerts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setNotifications(activeAlerts);
-    });
+    }, (error) => console.error("Firestore portfolio notifications listener error:", error));
 
     return () => unsubscribe();
   }, [currentUserEmail, systemHandle]);
@@ -492,7 +492,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       )}
 
-      <main className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-x-hidden">
+      <main className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-x-hidden p-6">
         {children}
       </main>
     </div>

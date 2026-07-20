@@ -2,11 +2,6 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // Preserves your build configuration preferences safely
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-
   // Configures remote image assets support
   images: {
     remotePatterns: [

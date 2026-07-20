@@ -3,39 +3,67 @@
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import { getFirestore } from "firebase-admin/firestore";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { getFirebaseAdmin } from "@/lib/firebase-admin";
+import { z } from "zod";
+
+const generateReportRequestSchema = z.object({
+  reportType: z.string().trim().min(1).max(100).optional(),
+  projectId: z.string().trim().min(1).max(128).optional(),
+  dateRange: z.object({
+    start: z.string().trim().max(40).optional(),
+    end: z.string().trim().max(40).optional(),
+  }).strict().optional(),
+  options: z.record(z.unknown()).optional(),
+  journalEntries: z.array(z.unknown()).max(500).optional(),
+  reportingPeriod: z.string().trim().max(200).optional(),
+}).strict();
 
 export async function POST(request: Request) {
-  try {
-    const { reportType, projectId, dateRange, options } = await request.json();
-    
-    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-    const fbProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    
-    // Clean environment strings for certificate loading
-    const rawPrivateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
-    const privateKey = rawPrivateKey
-      ? rawPrivateKey.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, '\n')
-      : undefined;
+  const authorization = request.headers.get("authorization");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : "";
 
-    if (getApps().length === 0) {
-      if (!clientEmail || !privateKey || !fbProjectId) {
-        return NextResponse.json({ error: "Missing critical environment configurations." }, { status: 400 });
-      }
-      initializeApp({
-        credential: cert({ projectId: fbProjectId, clientEmail, privateKey }),
-      });
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let admin;
+  try {
+    admin = getFirebaseAdmin();
+    await admin.auth.verifyIdToken(token);
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    let requestPayload: unknown;
+    try {
+      requestPayload = await request.json();
+    } catch {
+      return NextResponse.json({
+        error: "Bad Request",
+        details: { formErrors: ["Request body must contain valid JSON."], fieldErrors: {} },
+      }, { status: 400 });
     }
 
-    const db = getFirestore();
+    const validation = generateReportRequestSchema.safeParse(requestPayload);
+    if (!validation.success) {
+      return NextResponse.json({
+        error: "Bad Request",
+        details: validation.error.flatten(),
+      }, { status: 400 });
+    }
+
+    const { reportType, projectId } = validation.data;
+    const db = admin.db;
     
     // Fetch active registry matrices
     const raidSnapshot = await db.collection("raid_matrix").get();
     const raidItems = raidSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 
     const projectSnapshot = projectId && projectId !== "all" 
-      ? await db.collection("projects").doc(projectId).get()
+      ? await db.collection("admin_projects").doc(projectId).get()
       : null;
     const projectData = projectSnapshot?.exists ? projectSnapshot.data() : null;
     const projectName = projectData?.name || "All Projects Portfolio";
