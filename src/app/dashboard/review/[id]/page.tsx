@@ -385,21 +385,29 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                         <p className="text-sm font-medium text-slate-800 leading-relaxed font-sans print:text-slate-900 whitespace-pre-wrap">{item.description}</p>
                       </div>
                       
-                      {/* Photo specifically mapped under this log content */}
-                      {item.itemPhoto ? (
-                        <div className="pt-2">
-                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">Bound Media Frame:</label>
-                          <div 
-                            onClick={() => openImageModal(item.itemPhoto)}
-                            className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img"
-                          >
-                            <img src={item.itemPhoto} alt={`Evidence Frame ${index + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
-                            <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
+                      {(() => {
+                        const photos = item.itemPhotos || (item.itemPhoto ? [item.itemPhoto] : []);
+                        if (photos.length === 0) {
+                          return <div className="text-[10px] text-slate-300 italic font-mono pt-1 print:hidden">-- No attachment bound to this row --</div>;
+                        }
+                        return (
+                          <div className="pt-2">
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 font-mono print:hidden">Bound Media Frame(s):</label>
+                            <div className="flex flex-wrap gap-3">
+                              {photos.map((url: string, pIdx: number) => (
+                                <div 
+                                  key={pIdx}
+                                  onClick={() => openImageModal(url)}
+                                  className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img"
+                                >
+                                  <img src={url} alt={`Evidence Frame ${index + 1} - Photo ${pIdx + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
+                                  <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ) : (
-                        <div className="text-[10px] text-slate-300 italic font-mono pt-1 print:hidden">-- No attachment bound to this row --</div>
-                      )}
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>
