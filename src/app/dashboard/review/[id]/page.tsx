@@ -49,11 +49,15 @@ const getDocName = (att: any, index: number): string => {
 };
 
 const getFileType = (url: string, name: string): 'pdf' | 'heic' | 'image' => {
+  if (!url) return 'image';
+  
   const cleanUrl = url.split('?')[0].toLowerCase();
   const cleanName = (name || '').toLowerCase();
 
   if (cleanUrl.endsWith('.pdf') || cleanName.endsWith('.pdf')) return 'pdf';
-  if (cleanUrl.endsWith('.heic') || cleanName.endsWith('.heic') || cleanUrl.endsWith('.heif') || cleanName.endsWith('.heif')) return 'heic';
+  if (cleanUrl.endsWith('.heic') || cleanName.endsWith('.heic') || cleanUrl.endsWith('.heif')) return 'heic';
+  
+  // Default to image for standard photos, jpeg, png, webp, and blob previews
   return 'image';
 };
 
@@ -245,51 +249,50 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       const timestamp = new Date().toISOString();
       
       const storageInstance = getStorage();
-      const uploadedResolutionUrls = await Promise.all(
-        pmAttachments.map(async (att) => {
-          if (att.isUploaded) {
-            return att.previewUrl;
+      const uploadedResolutionUrls: string[] = [];
+
+      for (const item of pmAttachments) {
+        if (item.file && item.file instanceof File) {
+          const file = item.file;
+          const fileExt = file.name.split('.').pop() || 'jpg';
+          const storagePath = `closeout_documents/${id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
+          const fileRef = storageRef(storageInstance, storagePath);
+
+          let contentType = file.type;
+          if (file.name.toLowerCase().endsWith('.heic')) {
+            contentType = 'image/heic';
+          } else if (file.name.toLowerCase().endsWith('.heif')) {
+            contentType = 'image/heif';
+          } else if (file.name.toLowerCase().endsWith('.pdf')) {
+            contentType = 'application/pdf';
+          }
+          if (!contentType) {
+            contentType = 'image/jpeg';
           }
 
-          if (att.file) {
-            const uId = crypto.randomUUID();
-            const fileExtension = att.name.split('.').pop() || 'jpg';
-            const storagePath = `closeout_documents/${id}-${uId}.${fileExtension}`;
-            const storageRefInstance = storageRef(storageInstance, storagePath);
-
-            let contentType = att.file.type;
-            if (att.name.toLowerCase().endsWith('.heic')) {
-              contentType = 'image/heic';
-            } else if (att.name.toLowerCase().endsWith('.heif')) {
-              contentType = 'image/heif';
-            } else if (att.name.toLowerCase().endsWith('.pdf')) {
-              contentType = 'application/pdf';
-            }
-            if (!contentType) {
-              contentType = 'application/octet-stream';
-            }
-
-            const metadata = { contentType };
-            const uploadTask = uploadBytesResumable(storageRefInstance, att.file, metadata);
-
-            const downloadUrl = await new Promise<string>((resolve, reject) => {
-              uploadTask.on(
-                "state_changed",
-                null,
-                (error) => reject(error),
-                async () => {
-                  const url = await getDownloadURL(uploadTask.snapshot.ref);
-                  resolve(url);
-                }
-              );
+          const metadata = { contentType };
+          
+          try {
+            const uploadTaskSnapshot = await uploadBytesResumable(fileRef, file, metadata);
+            const downloadUrl = await getDownloadURL(uploadTaskSnapshot.ref);
+            uploadedResolutionUrls.push(downloadUrl);
+          } catch (uploadError) {
+            console.error("Storage upload failure:", uploadError);
+            toast({
+              variant: "destructive",
+              title: "Upload Failed",
+              description: `Failed to upload "${file.name}". Aborting review save.`
             });
-
-            return downloadUrl;
+            setIsSaving(false);
+            return;
           }
-
-          return att.previewUrl || "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=600";
-        })
-      );
+        } else {
+          const url = getDocUrl(item);
+          if (url && !url.startsWith('blob:')) {
+            uploadedResolutionUrls.push(url);
+          }
+        }
+      }
 
       const updatePayload = {
         location, 
@@ -657,6 +660,24 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
               {pmAttachments.map((att, idx) => {
                 const url = getDocUrl(att);
                 const name = getDocName(att, idx);
+
+                if (url && url.startsWith('blob:')) {
+                  return (
+                    <div 
+                      key={att.id || idx} 
+                      className="relative p-2 border border-red-200 rounded-sm bg-red-50/50 flex items-center gap-2 text-xs print:hidden"
+                    >
+                      <ShieldAlert className="h-6 w-6 text-red-500 shrink-0" />
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <span className="truncate font-medium text-slate-700 font-mono text-[11px]" title={name}>
+                          {name}
+                        </span>
+                        <span className="text-[10px] text-red-600 font-bold">Attachment Expired (Re-upload Required)</span>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const type = getFileType(url, name);
 
                 if (type === 'pdf') {
