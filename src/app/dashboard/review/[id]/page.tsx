@@ -16,6 +16,79 @@ import { db, auth } from "@/lib/firebase";
 
 // Native Firebase Transactions
 import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
+import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+
+const getDocUrl = (docObj: any): string => {
+  if (typeof docObj === 'string') return docObj;
+  return docObj?.url || docObj?.fileUrl || docObj?.downloadUrl || '';
+};
+
+const getDocName = (docObj: any, index: number): string => {
+  if (typeof docObj === 'object' && docObj?.name) return docObj.name;
+  return `Resolution_Doc_${index + 1}`;
+};
+
+const getFileExtension = (name: string, url: string): string => {
+  if (name && name.includes('.')) {
+    const ext = name.split('.').pop()?.toLowerCase();
+    if (ext) return ext;
+  }
+  if (url) {
+    try {
+      const decodedUrl = decodeURIComponent(url);
+      const pathPart = decodedUrl.split('?')[0];
+      const ext = pathPart.split('.').pop()?.toLowerCase();
+      if (ext && ext.length <= 4) return ext;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return '';
+};
+
+const getFileType = (name: string, url: string): 'pdf' | 'heic' | 'image' | 'unknown' => {
+  const ext = getFileExtension(name, url);
+  if (ext === 'pdf') return 'pdf';
+  if (ext === 'heic' || ext === 'heif') return 'heic';
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+  return 'unknown';
+};
+
+const AttachmentCard = ({ att, openImageModal }: { att: any; openImageModal: (url: string) => void }) => {
+  const [hasError, setHasError] = useState(false);
+  const url = att.previewUrl;
+
+  if (hasError || !url) {
+    return (
+      <div 
+        onClick={() => url && window.open(url, '_blank')}
+        className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-[#3c38d4] transition-colors print:bg-white print:border-none print:p-1"
+      >
+        <FileText className="h-6 w-6 text-slate-500 shrink-0 print:text-black" />
+        <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={att.name}>
+          {att.name}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      onClick={() => openImageModal(url)}
+      className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:bg-white print:border-none print:p-1"
+    >
+      <img 
+        src={url} 
+        alt={att.name} 
+        className="h-8 w-8 object-cover rounded-xs shrink-0" 
+        onError={() => setHasError(true)}
+      />
+      <span className="truncate font-medium text-slate-700 font-mono text-[11px] group-hover:text-[#3c38d4] print:text-slate-900" title={att.name}>
+        {att.name}
+      </span>
+    </div>
+  );
+};
 
 export default function ReviewObservationPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = React.use(params);
@@ -103,10 +176,10 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
         setIssuesReportNumber(data.issuesReportNumber || "");
 
         if (data.resolutionAttachments && Array.from(data.resolutionAttachments).length > 0) {
-          const loadedAttachments = data.resolutionAttachments.map((url: string, index: number) => ({
+          const loadedAttachments = data.resolutionAttachments.map((docObj: any, index: number) => ({
             id: `loaded-${index}`,
-            name: `Resolution_Doc_${index + 1}`,
-            previewUrl: url, 
+            name: getDocName(docObj, index),
+            previewUrl: getDocUrl(docObj), 
             isUploaded: true
           }));
           setPmAttachments(loadedAttachments);
@@ -148,7 +221,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       file,
       name: file.name,
       id: crypto.randomUUID(),
-      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : ""
+      previewUrl: URL.createObjectURL(file)
     }));
 
     setPmAttachments([...pmAttachments, ...newAttachments]);
@@ -169,7 +242,52 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       const currentUser = auth.currentUser?.email || "Unknown PM";
       const timestamp = new Date().toISOString();
       
-      const uploadedResolutionUrls = pmAttachments.map(a => a.previewUrl || "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=600");
+      const storageInstance = getStorage();
+      const uploadedResolutionUrls = await Promise.all(
+        pmAttachments.map(async (att) => {
+          if (att.isUploaded) {
+            return att.previewUrl;
+          }
+
+          if (att.file) {
+            const uId = crypto.randomUUID();
+            const fileExtension = att.name.split('.').pop() || 'jpg';
+            const storagePath = `closeout_documents/${id}-${uId}.${fileExtension}`;
+            const storageRefInstance = storageRef(storageInstance, storagePath);
+
+            let contentType = att.file.type;
+            if (att.name.toLowerCase().endsWith('.heic')) {
+              contentType = 'image/heic';
+            } else if (att.name.toLowerCase().endsWith('.heif')) {
+              contentType = 'image/heif';
+            } else if (att.name.toLowerCase().endsWith('.pdf')) {
+              contentType = 'application/pdf';
+            }
+            if (!contentType) {
+              contentType = 'application/octet-stream';
+            }
+
+            const metadata = { contentType };
+            const uploadTask = uploadBytesResumable(storageRefInstance, att.file, metadata);
+
+            const downloadUrl = await new Promise<string>((resolve, reject) => {
+              uploadTask.on(
+                "state_changed",
+                null,
+                (error) => reject(error),
+                async () => {
+                  const url = await getDownloadURL(uploadTask.snapshot.ref);
+                  resolve(url);
+                }
+              );
+            });
+
+            return downloadUrl;
+          }
+
+          return att.previewUrl || "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=600";
+        })
+      );
 
       const updatePayload = {
         location, 
@@ -385,29 +503,21 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                         <p className="text-sm font-medium text-slate-800 leading-relaxed font-sans print:text-slate-900 whitespace-pre-wrap">{item.description}</p>
                       </div>
                       
-                      {(() => {
-                        const photos = item.itemPhotos || (item.itemPhoto ? [item.itemPhoto] : []);
-                        if (photos.length === 0) {
-                          return <div className="text-[10px] text-slate-300 italic font-mono pt-1 print:hidden">-- No attachment bound to this row --</div>;
-                        }
-                        return (
-                          <div className="pt-2">
-                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 font-mono print:hidden">Bound Media Frame(s):</label>
-                            <div className="flex flex-wrap gap-3">
-                              {photos.map((url: string, pIdx: number) => (
-                                <div 
-                                  key={pIdx}
-                                  onClick={() => openImageModal(url)}
-                                  className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img"
-                                >
-                                  <img src={url} alt={`Evidence Frame ${index + 1} - Photo ${pIdx + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
-                                  <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
-                                </div>
-                              ))}
-                            </div>
+                      {/* Photo specifically mapped under this log content */}
+                      {item.itemPhoto ? (
+                        <div className="pt-2">
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">Bound Media Frame:</label>
+                          <div 
+                            onClick={() => openImageModal(item.itemPhoto)}
+                            className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img"
+                          >
+                            <img src={item.itemPhoto} alt={`Evidence Frame ${index + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
+                            <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
                           </div>
-                        );
-                      })()}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-300 italic font-mono pt-1 print:hidden">-- No attachment bound to this row --</div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -533,18 +643,50 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
               Resolution Closeout Document Logs
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 border border-slate-200 rounded-sm bg-white print:border-slate-300">
-              {pmAttachments.map((att) => (
-                <div key={att.id} onClick={() => att.previewUrl && openImageModal(att.previewUrl)} className={`relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs print:bg-white print:border-none print:p-1 ${att.previewUrl ? 'cursor-pointer hover:border-[#3c38d4]' : ''}`}>
-                  {att.previewUrl ? (
-                    <img src={att.previewUrl} alt="Upload thumb" className="h-8 w-8 object-cover rounded-xs shrink-0" />
-                  ) : (
-                    <FileText className="h-6 w-6 text-red-500 shrink-0 print:text-black" />
-                  )}
-                  <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={att.name}>
-                    {att.name}
-                  </span>
-                </div>
-              ))}
+              {pmAttachments.map((att, idx) => {
+                const fileType = getFileType(att.name, att.previewUrl);
+                const url = att.previewUrl;
+
+                if (fileType === 'pdf') {
+                  return (
+                    <div 
+                      key={att.id || idx} 
+                      onClick={() => url && window.open(url, '_blank')}
+                      className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-red-400 transition-colors print:bg-white print:border-none print:p-1"
+                    >
+                      <FileText className="h-6 w-6 text-red-500 shrink-0 print:text-black" />
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={att.name}>
+                          {att.name}
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono">PDF Document</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (fileType === 'heic') {
+                  return (
+                    <div 
+                      key={att.id || idx} 
+                      onClick={() => url && window.open(url, '_blank')}
+                      className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-blue-400 transition-colors print:bg-white print:border-none print:p-1"
+                    >
+                      <ImageIcon className="h-6 w-6 text-blue-500 shrink-0 print:text-black" />
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={att.name}>
+                          {att.name}
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono">HEIC Image</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <AttachmentCard key={att.id || idx} att={att} openImageModal={openImageModal} />
+                );
+              })}
             </div>
           </div>
         )}
