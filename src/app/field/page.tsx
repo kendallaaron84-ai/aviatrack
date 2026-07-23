@@ -20,6 +20,15 @@ const WEATHER_OPTIONS = ["Raining", "Dry", "Hot", "Cold"];
 const OBSERVATION_TYPES = ["General", "Risk", "Safety", "Change Request"];
 const PRIORITIES = ["Low", "Medium", "High"];
 
+const getObservationPhotos = (obs: any): string[] => {
+  if (Array.isArray(obs.photos) && obs.photos.length > 0) return obs.photos;
+  if (Array.isArray(obs.photoUrls) && obs.photoUrls.length > 0) return obs.photoUrls;
+  if (Array.isArray(obs.attachments) && obs.attachments.length > 0) return obs.attachments;
+  if (typeof obs.imageUrl === 'string' && obs.imageUrl.trim() !== '') return [obs.imageUrl];
+  if (typeof obs.photoUrl === 'string' && obs.photoUrl.trim() !== '') return [obs.photoUrl];
+  return [];
+};
+
 export default function FieldIntakePage() {
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -686,6 +695,28 @@ export default function FieldIntakePage() {
                     )}
                   </div>
                 </div>
+
+                {(() => {
+                  const photos = getObservationPhotos(obs);
+                  if (photos.length === 0) return null;
+
+                  return (
+                    <div className="grid grid-cols-2 gap-2 my-2 md:col-span-2">
+                      {photos.map((url, idx) => (
+                        <img
+                          key={idx}
+                          src={url}
+                          alt={`Observation photo ${idx + 1}`}
+                          className="w-full h-32 object-cover rounded-md border border-slate-700"
+                          onError={(e) => {
+                            // Hide broken image tags gracefully if URL expires or fails to load
+                            (e.target as HTMLElement).style.display = 'none';
+                          }}
+                        />
+                      ))}
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           ))}

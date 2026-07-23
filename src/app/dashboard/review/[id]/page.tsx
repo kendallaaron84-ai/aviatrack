@@ -96,6 +96,197 @@ const ImageAttachmentCard = ({ url, name, openImageModal }: { url: string; name:
   );
 };
 
+const CloseoutCard = ({ 
+  att, 
+  idx, 
+  isReadOnly, 
+  subObservationsList, 
+  updateAttachmentMeta, 
+  openImageModal 
+}: { 
+  att: any; 
+  idx: number; 
+  isReadOnly: boolean; 
+  subObservationsList: any[]; 
+  updateAttachmentMeta: (attId: string, field: string, value: string) => void; 
+  openImageModal: (url: string) => void; 
+}) => {
+  const [imgError, setImgError] = useState(false);
+  const url = getDocUrl(att);
+  const name = getDocName(att, idx);
+
+  // Extract selected Log Entry label for static PDF export
+  const getSelectedLabel = () => {
+    if (!att.logEntryRef) return 'None Selected';
+    if (att.logEntryRef === 'General Resolution') return 'General Resolution';
+    
+    // Parse index from e.g. "Log Entry #1"
+    const match = att.logEntryRef.match(/Log Entry #(\d+)/);
+    if (match) {
+      const idxVal = parseInt(match[1], 10) - 1;
+      const sub = subObservationsList[idxVal];
+      if (sub) {
+        return `Log Entry #${idxVal + 1} (${sub.observationType || 'General'})`;
+      }
+    }
+    return att.logEntryRef;
+  };
+  const selectedLabel = getSelectedLabel();
+
+  if (url && url.startsWith('blob:')) {
+    return (
+      <div className="border border-red-200 rounded-sm bg-red-50/50 p-3 flex items-center gap-2 text-xs print:hidden">
+        <ShieldAlert className="h-6 w-6 text-red-500 shrink-0" />
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="truncate font-medium text-slate-700 font-mono text-[11px]" title={name}>
+            {name}
+          </span>
+          <span className="text-[10px] text-red-600 font-bold">Attachment Expired (Re-upload Required)</span>
+        </div>
+      </div>
+    );
+  }
+
+  const type = getFileType(url, name);
+
+  return (
+    <div className="observation-card">
+      {/* 1. Static Embedded Image Container (NO links, NO external URLs) */}
+      <div className="thumbnail-wrapper">
+        {url ? (
+          (() => {
+            if (type === 'pdf') {
+              return (
+                <div className="flex flex-col items-center justify-center w-full h-full p-2">
+                  <FileText className="h-12 w-12 text-red-500 print:text-black" />
+                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono mt-1 text-center truncate w-full">{name}</span>
+                </div>
+              );
+            }
+            
+            if (type === 'heic') {
+              return (
+                <div className="flex flex-col items-center justify-center w-full h-full p-2">
+                  <ImageIcon className="h-12 w-12 text-blue-500 print:text-black" />
+                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono mt-1 text-center truncate w-full">{name}</span>
+                </div>
+              );
+            }
+
+            if (imgError) {
+              return (
+                <div className="flex flex-col items-center justify-center w-full h-full p-2">
+                  <FileText className="h-12 w-12 text-slate-400 print:text-black" />
+                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono mt-1 text-center truncate w-full">{name}</span>
+                </div>
+              );
+            }
+            
+            return (
+              <img 
+                src={url} 
+                alt="Field Observation Evidence" 
+                onError={() => setImgError(true)}
+              />
+            );
+          })()
+        ) : (
+          <div className="no-image-placeholder">No Document Attached</div>
+        )}
+      </div>
+
+      {/* 2. Metadata Content Column */}
+      <div className="details-content">
+        
+        {/* LOG ENTRY REFERENCE */}
+        <div className="detail-item">
+          <span className="label">LOG ENTRY REFERENCE:</span>
+          
+          {/* Web Interactive Dropdown (Screen Only) */}
+          {!isReadOnly && (
+            <select
+              value={att.logEntryRef || ''}
+              onChange={(e) => updateAttachmentMeta(att.id, 'logEntryRef', e.target.value)}
+              className="print:hidden form-select max-w-xs"
+            >
+              <option value="">Select Log Entry...</option>
+              {subObservationsList.map((sub, sIdx) => (
+                <option key={sub.id || sIdx} value={`Log Entry #${sIdx + 1}`}>
+                  Log Entry #{sIdx + 1} ({sub.observationType || 'General'})
+                </option>
+              ))}
+              <option value="General Resolution">General Resolution</option>
+            </select>
+          )}
+
+          {/* Static Text String for PDF Export & Read-Only Mode */}
+          <span className={`${!isReadOnly ? 'hidden print:inline-block' : 'inline-block'} font-medium text-slate-800`}>
+            {selectedLabel}
+          </span>
+        </div>
+
+        {/* SOURCE REFERENCE */}
+        <div className="detail-item">
+          <span className="label">SOURCE REFERENCE:</span>
+          
+          {!isReadOnly ? (
+            <div className="flex flex-col gap-1 print:hidden max-w-md">
+              <input
+                type="text"
+                value={att.source || ''}
+                onChange={(e) => updateAttachmentMeta(att.id, 'source', e.target.value)}
+                className="form-input"
+                placeholder="Reference Title (e.g., Bulletin, Conformed Set)"
+              />
+              <input
+                type="text"
+                value={att.sourceUrl || ''}
+                onChange={(e) => updateAttachmentMeta(att.id, 'sourceUrl', e.target.value)}
+                className="form-input text-xs text-blue-600"
+                placeholder="SharePoint / Document URL"
+              />
+            </div>
+          ) : null}
+
+          {/* Formatted SharePoint Link for PDF / Print Output */}
+          <div className={`${!isReadOnly ? 'hidden print:flex' : 'flex'} flex-col gap-0.5`}>
+            <span className="font-semibold text-slate-800">
+              {att.source || 'N/A'}
+            </span>
+            {att.sourceUrl && (
+              <a 
+                href={att.sourceUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="source-document-link text-blue-600 underline text-xs break-all"
+              >
+                {att.sourceUrl}
+              </a>
+            )}
+          </div>
+        </div>
+
+        {/* PM CONVERSATION NOTES */}
+        <div className="detail-item">
+          <span className="label">PM CONVERSATION NOTES:</span>
+          {!isReadOnly ? (
+            <textarea
+              value={att.notes || ''}
+              onChange={(e) => updateAttachmentMeta(att.id, 'notes', e.target.value)}
+              className="print:hidden form-textarea max-w-xl"
+              rows={2}
+            />
+          ) : null}
+          <p className={`${!isReadOnly ? 'hidden print:block' : 'block'} text-slate-700 whitespace-pre-wrap m-0`}>
+            {att.notes || 'No notes provided.'}
+          </p>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
 export default function ReviewObservationPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = React.use(params);
   const router = useRouter();
@@ -156,6 +347,10 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
   const [activeLightboxImg, setActiveLightboxImg] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
 
+  const updateAttachmentMeta = (attId: string, field: string, value: string) => {
+    setPmAttachments(prev => prev.map(a => a.id === attId ? { ...a, [field]: value } : a));
+  };
+
   useEffect(() => {
     const currentUserEmail = auth.currentUser?.email || "";
     if (currentUserEmail.toLowerCase().includes("ytevia") || currentUserEmail.toLowerCase().includes("portfolio")) {
@@ -185,7 +380,11 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
           const loadedAttachments = data.resolutionAttachments.map((docObj: any, index: number) => ({
             id: `loaded-${index}`,
             name: getDocName(docObj, index),
-            previewUrl: getDocUrl(docObj), 
+            previewUrl: getDocUrl(docObj),
+            logEntryRef: typeof docObj === 'object' ? docObj.logEntryRef || '' : '',
+            source: typeof docObj === 'object' ? docObj.source || '' : '',
+            sourceUrl: typeof docObj === 'object' ? docObj.sourceUrl || '' : '',
+            notes: typeof docObj === 'object' ? docObj.notes || '' : '',
             isUploaded: true
           }));
           setPmAttachments(loadedAttachments);
@@ -227,7 +426,11 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       file,
       name: file.name,
       id: crypto.randomUUID(),
-      previewUrl: URL.createObjectURL(file)
+      previewUrl: URL.createObjectURL(file),
+      logEntryRef: '',
+      source: '',
+      sourceUrl: '',
+      notes: ''
     }));
 
     setPmAttachments([...pmAttachments, ...newAttachments]);
@@ -249,9 +452,11 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
       const timestamp = new Date().toISOString();
       
       const storageInstance = getStorage();
-      const uploadedResolutionUrls: string[] = [];
+      const resolutionPayload: any[] = [];
 
       for (const item of pmAttachments) {
+        let downloadUrl = '';
+        
         if (item.file && item.file instanceof File) {
           const file = item.file;
           const fileExt = file.name.split('.').pop() || 'jpg';
@@ -274,8 +479,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
           
           try {
             const uploadTaskSnapshot = await uploadBytesResumable(fileRef, file, metadata);
-            const downloadUrl = await getDownloadURL(uploadTaskSnapshot.ref);
-            uploadedResolutionUrls.push(downloadUrl);
+            downloadUrl = await getDownloadURL(uploadTaskSnapshot.ref);
           } catch (uploadError) {
             console.error("Storage upload failure:", uploadError);
             toast({
@@ -287,10 +491,18 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             return;
           }
         } else {
-          const url = getDocUrl(item);
-          if (url && !url.startsWith('blob:')) {
-            uploadedResolutionUrls.push(url);
-          }
+          downloadUrl = getDocUrl(item);
+        }
+
+        if (downloadUrl && !downloadUrl.startsWith('blob:')) {
+          resolutionPayload.push({
+            url: downloadUrl,
+            name: item.name || 'Resolution Attachment',
+            logEntryRef: item.logEntryRef || '',
+            source: item.source || '',
+            sourceUrl: item.sourceUrl || '',
+            notes: item.notes || ''
+          });
         }
       }
 
@@ -306,7 +518,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
         issuesReportNumber,
         lastUpdatedBy: currentUser,
         lastUpdatedAt: timestamp,
-        resolutionAttachments: uploadedResolutionUrls
+        resolutionAttachments: resolutionPayload
       };
 
       updateDoc(docRef, updatePayload);
@@ -445,6 +657,96 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             border: 1px solid #cbd5e1 !important;
           }
         }
+
+        .observation-card {
+          display: flex;
+          flex-direction: row;
+          align-items: flex-start;
+          gap: 16px;
+          padding: 12px;
+          margin-bottom: 12px;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          background-color: #ffffff;
+          page-break-inside: avoid;
+        }
+
+        .thumbnail-wrapper {
+          width: 160px;
+          height: 160px;
+          flex-shrink: 0;
+          background-color: #f8fafc;
+          border: 1px solid #cbd5e1;
+          border-radius: 6px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        .thumbnail-wrapper img {
+          max-width: 100%;
+          max-height: 100%;
+          width: auto;
+          height: auto;
+          object-fit: contain;
+          display: block;
+        }
+
+        .details-content {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          font-size: 13px;
+        }
+
+        .detail-item {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .label {
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          color: #0f172a;
+          letter-spacing: 0.05em;
+        }
+
+        .source-document-link {
+          color: #1d4ed8;
+          text-decoration: underline;
+          word-break: break-all;
+          overflow-wrap: anywhere;
+        }
+
+        .no-image-placeholder {
+          font-size: 11px;
+          color: #94a3b8;
+          text-align: center;
+        }
+
+        .form-select, .form-input, .form-textarea {
+          width: 100%;
+          padding: 6px 10px;
+          font-size: 12px;
+          border: 1px solid #cbd5e1;
+          border-radius: 4px;
+          background-color: #f8fafc;
+          color: #334155;
+          outline: none;
+          transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+        }
+        .form-select:focus, .form-input:focus, .form-textarea:focus {
+          border-color: #3c38d4;
+          background-color: #ffffff;
+          box-shadow: 0 0 0 2px rgba(60, 56, 212, 0.1);
+        }
+        .form-textarea {
+          resize: none;
+        }
       `}</style>
 
       {/* Main Content Pane */}
@@ -505,7 +807,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                       
                       <div className="space-y-1">
                         <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider font-mono block print:text-slate-600">Observation Notes / Remarks:</span>
-                        <p className="text-sm font-medium text-slate-800 leading-relaxed font-sans print:text-slate-900 whitespace-pre-wrap">{item.description}</p>
+                        <p className="text-xs font-medium text-slate-800 leading-relaxed font-sans print:text-slate-900 whitespace-pre-wrap">{item.description}</p>
                       </div>
                       
                       {(() => {
@@ -516,16 +818,27 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
 
                         return (
                           <div className="pt-2">
-                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">Bound Media Frames:</label>
-                            <div className="flex flex-wrap gap-2">
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">
+                              Bound Media Frames ({photos.length}):
+                            </label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 print-photo-grid">
                               {photos.map((photoUrl, pIdx) => (
                                 <div 
                                   key={pIdx}
                                   onClick={() => openImageModal(photoUrl)}
-                                  className="relative h-24 w-36 rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-2xs cursor-pointer hover:border-[#3c38d4] transition-colors group print:scale-inline-img shrink-0"
+                                  className="relative h-52 sm:h-60 w-full rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group print-photo-card"
                                 >
-                                  <img src={photoUrl} alt={`Evidence Frame ${index + 1}-${pIdx + 1}`} className="w-full h-full object-cover group-hover:opacity-85" />
-                                  <div className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden"><Maximize2 className="h-2.5 w-2.5" /></div>
+                                  <img 
+                                    src={photoUrl} 
+                                    alt={`Evidence Frame ${index + 1}-${pIdx + 1}`} 
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" 
+                                  />
+                                  <div className="absolute top-1.5 right-1.5 p-1.5 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
+                                    <Maximize2 className="h-3 w-3"/>
+                                  </div>
+                                  <div className="absolute bottom-1 left-1.5 px-1.5 py-0.5 bg-black/60 text-[9px] font-mono font-bold text-white rounded-xs">
+                                    Frame #{pIdx + 1}
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -652,74 +965,23 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
 
         {/* Closeout Document Logs */}
         {pmAttachments.length > 0 && (
-          <div className="space-y-2 break-inside-avoid">
+          <div className="space-y-3 break-inside-avoid pt-2">
             <label className="block text-xs font-bold text-slate-900 uppercase tracking-wide print:text-black">
-              Resolution Closeout Document Logs
+              Resolution Closeout Document Logs & References
             </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 border border-slate-200 rounded-sm bg-white print:border-slate-300">
-              {pmAttachments.map((att, idx) => {
-                const url = getDocUrl(att);
-                const name = getDocName(att, idx);
-
-                if (url && url.startsWith('blob:')) {
-                  return (
-                    <div 
-                      key={att.id || idx} 
-                      className="relative p-2 border border-red-200 rounded-sm bg-red-50/50 flex items-center gap-2 text-xs print:hidden"
-                    >
-                      <ShieldAlert className="h-6 w-6 text-red-500 shrink-0" />
-                      <div className="flex flex-col min-w-0 flex-1">
-                        <span className="truncate font-medium text-slate-700 font-mono text-[11px]" title={name}>
-                          {name}
-                        </span>
-                        <span className="text-[10px] text-red-600 font-bold">Attachment Expired (Re-upload Required)</span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                const type = getFileType(url, name);
-
-                if (type === 'pdf') {
-                  return (
-                    <div 
-                      key={att.id || idx} 
-                      onClick={() => url && window.open(url, '_blank')}
-                      className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-red-400 transition-colors print:bg-white print:border-none print:p-1"
-                    >
-                      <FileText className="h-6 w-6 text-red-500 shrink-0 print:text-black" />
-                      <div className="flex flex-col min-w-0 flex-1">
-                        <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={name}>
-                          {name}
-                        </span>
-                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono">PDF Document</span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                if (type === 'heic') {
-                  return (
-                    <div 
-                      key={att.id || idx} 
-                      onClick={() => url && window.open(url, '_blank')}
-                      className="relative p-2 border rounded-sm bg-slate-50 flex items-center gap-2 text-xs cursor-pointer hover:border-blue-400 transition-colors print:bg-white print:border-none print:p-1"
-                    >
-                      <ImageIcon className="h-6 w-6 text-blue-500 shrink-0 print:text-black" />
-                      <div className="flex flex-col min-w-0 flex-1">
-                        <span className="truncate font-medium text-slate-700 font-mono text-[11px] print:text-slate-900" title={name}>
-                          {name}
-                        </span>
-                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono">HEIC Image</span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <ImageAttachmentCard key={att.id || idx} url={url} name={name} openImageModal={openImageModal} />
-                );
-              })}
+            
+            <div className="space-y-3">
+              {pmAttachments.map((att, idx) => (
+                <CloseoutCard
+                  key={att.id || idx}
+                  att={att}
+                  idx={idx}
+                  isReadOnly={isReadOnly}
+                  subObservationsList={subObservationsList}
+                  updateAttachmentMeta={updateAttachmentMeta}
+                  openImageModal={openImageModal}
+                />
+              ))}
             </div>
           </div>
         )}
