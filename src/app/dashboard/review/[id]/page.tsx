@@ -96,6 +96,18 @@ const ImageAttachmentCard = ({ url, name, openImageModal }: { url: string; name:
   );
 };
 
+// Helper to clean and encode SharePoint URLs containing spaces
+const getCleanUrl = (urlStr?: string) => {
+  if (!urlStr) return '';
+  const trimmed = urlStr.trim();
+  try {
+    // If it's already a valid URL, encode unescaped spaces
+    return encodeURI(trimmed);
+  } catch {
+    return trimmed;
+  }
+};
+
 const CloseoutCard = ({ 
   att, 
   idx, 
@@ -255,10 +267,10 @@ const CloseoutCard = ({
             </span>
             {att.sourceUrl && (
               <a 
-                href={att.sourceUrl} 
+                href={getCleanUrl(att.sourceUrl)} 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="source-document-link text-blue-600 underline text-xs break-all"
+                className="source-document-link text-blue-600 underline text-xs break-all print:text-blue-700"
               >
                 {att.sourceUrl}
               </a>
@@ -826,12 +838,12 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                                 <div 
                                   key={pIdx}
                                   onClick={() => openImageModal(photoUrl)}
-                                  className="relative h-52 sm:h-60 w-full rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group print-photo-card"
+                                  className="relative h-52 sm:h-60 w-full rounded-sm border border-slate-200 bg-slate-100 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group print-photo-card flex items-center justify-center"
                                 >
                                   <img 
                                     src={photoUrl} 
                                     alt={`Evidence Frame ${index + 1}-${pIdx + 1}`} 
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" 
+                                    className="max-w-full max-h-full w-auto h-auto object-contain group-hover:scale-105 transition-transform duration-200" 
                                   />
                                   <div className="absolute top-1.5 right-1.5 p-1.5 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
                                     <Maximize2 className="h-3 w-3"/>
