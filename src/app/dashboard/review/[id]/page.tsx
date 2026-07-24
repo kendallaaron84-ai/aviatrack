@@ -96,16 +96,15 @@ const ImageAttachmentCard = ({ url, name, openImageModal }: { url: string; name:
   );
 };
 
-// Helper to clean and encode SharePoint URLs containing spaces
+// Preserve valid SharePoint encoding while repairing legacy double-encoded paths.
 const getCleanUrl = (urlStr?: string) => {
   if (!urlStr) return '';
-  const trimmed = urlStr.trim();
-  try {
-    // If it's already a valid URL, encode unescaped spaces
-    return encodeURI(trimmed);
-  } catch {
-    return trimmed;
-  }
+
+  return urlStr
+    .trim()
+    .replace(/%252F/gi, '%2F')
+    .replace(/%2520/gi, '%20')
+    .replace(/ /g, '%20');
 };
 
 const CloseoutCard = ({ 
