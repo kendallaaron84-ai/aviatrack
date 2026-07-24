@@ -668,6 +668,53 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             border-radius: 4px !important;
             border: 1px solid #cbd5e1 !important;
           }
+          .print-photo-row {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            align-items: flex-start !important;
+            gap: 8px !important;
+            width: 100% !important;
+          }
+          .print-photo-card {
+            width: 140px !important;
+            height: 140px !important;
+            min-width: 140px !important;
+            max-width: 140px !important;
+            min-height: 140px !important;
+            max-height: 140px !important;
+            flex: 0 0 140px !important;
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+          }
+          .print-photo-card img {
+            display: block !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
+          }
+          .evidence-detail-page {
+            box-sizing: border-box !important;
+            break-before: page !important;
+            page-break-before: always !important;
+            width: 100% !important;
+            min-height: 9in !important;
+            padding: 0.15in !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+          }
+          .evidence-detail-image {
+            display: block !important;
+            max-width: 100% !important;
+            max-height: 8.25in !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
+          }
         }
 
         .observation-card {
@@ -830,25 +877,25 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
 
                         return (
                           <div className="pt-2">
-                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-mono print:hidden">
+                            <label className="block text-[9px] font-bold text-slate-600 uppercase tracking-wider mb-1 font-mono">
                               Bound Media Frames ({photos.length}):
                             </label>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 print-photo-grid">
+                            <div className="flex flex-wrap gap-2 items-start print-photo-row">
                               {photos.map((photoUrl, pIdx) => (
                                 <div 
                                   key={pIdx}
                                   onClick={() => openImageModal(photoUrl)}
-                                  className="relative h-52 sm:h-60 w-full rounded-sm border border-slate-200 bg-slate-100 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group print-photo-card flex items-center justify-center"
+                                  className="relative w-[150px] h-[150px] rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group shrink-0 flex items-center justify-center print-photo-card"
                                 >
                                   <img 
                                     src={photoUrl} 
                                     alt={`Evidence Frame ${index + 1}-${pIdx + 1}`} 
-                                    className="max-w-full max-h-full w-auto h-auto object-contain group-hover:scale-105 transition-transform duration-200" 
+                                    className="block max-w-full max-h-full w-auto h-auto object-contain group-hover:scale-105 transition-transform duration-200" 
                                   />
-                                  <div className="absolute top-1.5 right-1.5 p-1.5 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
-                                    <Maximize2 className="h-3 w-3"/>
+                                  <div className="absolute top-1 right-1 p-1 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
+                                    <Maximize2 className="h-2.5 w-2.5"/>
                                   </div>
-                                  <div className="absolute bottom-1 left-1.5 px-1.5 py-0.5 bg-black/60 text-[9px] font-mono font-bold text-white rounded-xs">
+                                  <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black/60 text-[8px] font-mono font-bold text-white rounded-xs">
                                     Frame #{pIdx + 1}
                                   </div>
                                 </div>
@@ -869,9 +916,22 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                 <label className="block text-xs font-bold text-slate-900 mb-1 print:text-black">Worksite Location Area Summary</label>
                 <Input value={location} onChange={e => setLocation(e.target.value)} disabled={isReadOnly} className="bg-white rounded-xs border-slate-300 shadow-none disabled:opacity-100 disabled:bg-transparent print:border-none print:px-0 print:h-auto font-medium" />
               </div>
-              <div className="print:hidden">
-                <label className="block text-xs font-bold text-slate-900 mb-1">Global Transmittal Overview / Package Abstract</label>
-                <Textarea value={description} onChange={e => setDescription(e.target.value)} disabled={isReadOnly} rows={2} className="bg-white rounded-xs border-slate-300 shadow-none resize-none" />
+              <div>
+                <label className="block text-xs font-bold text-slate-900 uppercase tracking-wide mb-1 print:text-black">
+                  Logs Summary
+                </label>
+                {!isReadOnly && (
+                  <Textarea
+                    value={description}
+                    onChange={e => setDescription(e.target.value)}
+                    placeholder="Enter summary notes for all logs on this page..."
+                    rows={3}
+                    className="form-textarea w-full bg-white rounded-xs border-slate-300 shadow-none resize-y print:hidden"
+                  />
+                )}
+                <p className={`${!isReadOnly ? "hidden print:block" : "block"} text-xs text-slate-800 whitespace-pre-wrap break-words m-0`}>
+                  {description || "No summary provided."}
+                </p>
               </div>
             </div>
           </CardContent>
@@ -1030,6 +1090,29 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             </Button>
           )}
         </div>
+
+        {/* Print-only original-resolution evidence sheets for detailed drawings and specifications. */}
+        <div className="hidden print:block">
+          {subObservationsList.flatMap((sub, sIdx) => {
+            const photos = getSubObsPhotos(sub);
+
+            return photos.map((photoUrl, pIdx) => (
+              <section key={`evidence-${sIdx}-${pIdx}`} className="evidence-detail-page">
+                <div className="w-full mb-3 pb-1 border-b border-slate-300 flex justify-between items-center text-xs font-mono font-bold text-slate-800">
+                  <span>LOG ENTRY #{sIdx + 1} ({sub.observationType || "GENERAL"})</span>
+                  <span>FRAME #{pIdx + 1} OF {photos.length}</span>
+                </div>
+                <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
+                  <img
+                    src={photoUrl}
+                    alt={`Full Evidence Detail ${sIdx + 1}-${pIdx + 1}`}
+                    className="evidence-detail-image"
+                  />
+                </div>
+              </section>
+            ));
+          })}
+        </div>
       </div>
 
       {/* Right Side Sticky Canvas Chat Feed Pane (Hidden during Print layout updates) */}
@@ -1152,9 +1235,9 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
 
       {/* Full Screen Lightbox Modal Canvas overlay */}
       {activeLightboxImg && (
-        <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 print:hidden">
-          <div className="absolute top-4 inset-x-4 flex items-center justify-between z-10 text-white">
-            <div className="text-xs font-mono tracking-widest text-slate-400 bg-slate-900/60 px-3 py-1.5 rounded border border-slate-800">
+        <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-sm flex flex-col print:hidden">
+          <div className="absolute top-4 inset-x-4 flex items-center justify-between z-20 text-white">
+            <div className="text-xs font-mono tracking-widest text-slate-400 bg-slate-900/80 px-3 py-1.5 rounded border border-slate-800 shadow-md">
               ZOOM: {(zoomScale * 100).toFixed(0)}%
             </div>
             <div className="flex items-center gap-2">
@@ -1165,13 +1248,16 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                 <ZoomIn className="h-4 w-4" />
               </Button>
               <Button 
-                onClick={() => setZoomScale(prev => Math.max(0.5, prev - 0.25))}
+                onClick={() => setZoomScale(prev => Math.max(1, prev - 0.25))}
                 variant="outline" size="sm" className="bg-slate-900 border-slate-800 text-white hover:bg-slate-800 h-8 w-8 p-0"
               >
                 <ZoomOut className="h-4 w-4" />
               </Button>
               <Button 
-                onClick={() => setActiveLightboxImg(null)}
+                onClick={() => {
+                  setActiveLightboxImg(null);
+                  setZoomScale(1);
+                }}
                 variant="destructive" size="sm" className="h-8 rounded px-3 text-xs font-bold gap-1"
               >
                 <X className="h-4 w-4" /> Close View
@@ -1179,13 +1265,19 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             </div>
           </div>
 
-          <div className="w-full h-full flex items-center justify-center overflow-auto p-8 select-none">
-            <img 
-              src={activeLightboxImg} 
-              alt="Expanded high-resolution trace view" 
-              className="max-w-full max-h-full object-contain shadow-2xl rounded-sm transition-transform duration-200 ease-out"
-              style={{ transform: `scale(${zoomScale})` }}
-            />
+          <div className="w-full h-full overflow-auto p-12 select-none">
+            <div className="min-w-full min-h-full flex items-center justify-center">
+              <img 
+                src={activeLightboxImg} 
+                alt="Expanded high-resolution trace view" 
+                className="object-contain shadow-2xl rounded-sm transition-[width] duration-150 ease-out"
+                style={{
+                  width: `${zoomScale * 100}%`,
+                  maxWidth: zoomScale === 1 ? "100%" : "none",
+                  maxHeight: zoomScale === 1 ? "85vh" : "none",
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
