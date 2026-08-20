@@ -39,6 +39,7 @@ export default function RiskClusterDashboard() {
   const [commentText, setCommentText] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
   const [migrationResult, setMigrationResult] = useState<any>(null);
+  const [dedupeDryRunResult, setDedupeDryRunResult] = useState<any>(null);
   const [isMigrationRunning, setIsMigrationRunning] = useState(false);
   const [showMigrationControls, setShowMigrationControls] = useState(false);
 
@@ -170,6 +171,26 @@ export default function RiskClusterDashboard() {
     }
   };
 
+  const handleDedupeDryRun = async () => {
+    setIsMigrationRunning(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
+      const response = await fetch("/api/raid-deduplicate", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "dry-run" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "RAID deduplication dry-run failed.");
+      setDedupeDryRunResult(data);
+    } catch (error: any) {
+      setDedupeDryRunResult({ error: error.message });
+    } finally {
+      setIsMigrationRunning(false);
+    }
+  };
+
   // State Patch updates with Integrated Audit Trail tracking arrays
   const handleUpdateParam = async (field: string, value: any) => {
     if (!selectedItem) return;
@@ -263,13 +284,16 @@ export default function RiskClusterDashboard() {
       ];
     });
 
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+    const csvContent = [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+    const csvBlob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+    const downloadUrl = URL.createObjectURL(csvBlob);
     const link = document.createElement("a");
-    link.href = encodeURI(csvContent);
+    link.href = downloadUrl;
     link.download = `Risk_Register_Snapshot_${selectedProject !== "ALL" ? selectedProject : "Master"}_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(downloadUrl);
   };
 
   return (
@@ -351,8 +375,10 @@ export default function RiskClusterDashboard() {
             <div className="flex gap-2">
               <Button disabled={isMigrationRunning} onClick={() => handleRaidNumberingMigration("dry-run")}>Run Dry-Run</Button>
               <Button disabled={isMigrationRunning || migrationResult?.mode !== "dry-run" || migrationResult?.duplicateRaidNumberCount !== 0} variant="destructive" onClick={() => handleRaidNumberingMigration("apply")}>Apply Verified Mapping</Button>
+              <Button disabled={isMigrationRunning} variant="outline" onClick={handleDedupeDryRun}>Run Dedupe Dry-Run</Button>
             </div>
             {migrationResult && <pre className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(migrationResult, null, 2)}</pre>}
+            {dedupeDryRunResult && <pre className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(dedupeDryRunResult, null, 2)}</pre>}
           </CardContent>
         </Card>
       )}

@@ -7,6 +7,7 @@ export type DateLike =
   | undefined;
 
 const MIN_VALID_YEAR = 1971;
+const MAX_VALID_YEAR = 2100;
 const SECONDS_THRESHOLD = 100_000_000_000;
 
 export function normalizeDate(value: DateLike): Date | null {
@@ -40,7 +41,8 @@ export function normalizeDate(value: DateLike): Date | null {
     return null;
   }
 
-  return Number.isFinite(date.getTime()) && date.getUTCFullYear() >= MIN_VALID_YEAR ? date : null;
+  const year = date.getUTCFullYear();
+  return Number.isFinite(date.getTime()) && year >= MIN_VALID_YEAR && year <= MAX_VALID_YEAR ? date : null;
 }
 
 export function varianceDays(baseline: DateLike, forecast: DateLike): number | null {

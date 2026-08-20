@@ -10,7 +10,7 @@ test("normalizes supported date representations and rejects corrupt dates", () =
   for (const value of [timestamp, shaped, "2025-01-02", "2025-01-02T00:00:00Z", 1735776000, 1735776000000]) {
     assert.equal(normalizeDate(value)?.toISOString().slice(0, 10), expected);
   }
-  for (const value of [null, undefined, "", "not-a-date", Number.NaN, Number.POSITIVE_INFINITY, 0, "1970-01-01"]) {
+  for (const value of [null, undefined, "", "not-a-date", Number.NaN, Number.POSITIVE_INFINITY, 0, "1970-01-01", "20226-11-01"]) {
     assert.equal(normalizeDate(value), null);
   }
 });
