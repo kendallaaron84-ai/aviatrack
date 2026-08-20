@@ -17,6 +17,7 @@ import { db, auth } from "@/lib/firebase";
 // Native Firebase Transactions
 import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
 import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+import { legacyReportNumber } from "@/lib/field-observation-utils";
 
 const getSubObsPhotos = (item: any): string[] => {
   if (!item) return [];
@@ -812,7 +813,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
         <div className="flex items-center justify-between print:border-b-2 print:border-slate-900 print:pb-2">
           <div className="space-y-1">
             <h1 className="text-2xl font-black text-[#3c38d4] tracking-tight print:text-black print:text-3xl uppercase">Field Observation Transmittal</h1>
-            <p className="text-xs font-mono font-bold text-slate-500">RECORD ID: FOR-{id.toUpperCase()}</p>
+            <p className="text-xs font-mono font-bold text-slate-500">RECORD ID: {obs.reportNumber || legacyReportNumber(id)}</p>
           </div>
           <div className="flex items-center gap-2 print:hidden">
             {isReadOnly && (
@@ -859,7 +860,7 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                   {subObservationsList.map((item, index) => (
                     <div key={item.id} className="p-4 border border-slate-200 bg-white shadow-2xs rounded-sm space-y-3 print:border-slate-300 print:p-4 print:shadow-none break-inside-avoid">
                       <div className="flex items-center justify-between border-b pb-2 font-mono">
-                        <span className="text-xs font-bold text-[#3c38d4] print:text-black">LOG ENTRY #{index + 1} ({item.observationType})</span>
+                        <span className="text-xs font-bold text-[#3c38d4] print:text-black">LOG ENTRY {item.itemNumber || `#${index + 1}`} ({item.observationType})</span>
                         <Badge className={`text-[9px] font-bold shadow-none rounded-xs ${item.priority === 'High' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-slate-50 text-slate-600'}`}>{item.priority} Priority</Badge>
                       </div>
                       

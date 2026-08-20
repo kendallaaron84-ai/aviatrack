@@ -15,6 +15,8 @@ import { DynamicPortfolioTimeline } from "@/components/dashboard/DynamicPortfoli
 import { ActiveThreatRiskRegister } from "@/components/dashboard/ActiveThreatRiskRegister";
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
+import { extractReportingPeriodEnd, normalizeDate, varianceDays } from "@/lib/date-utils";
+import { calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
 
 // Definitive Risk Status Colors System
 const STATUS_COLORS: Record<string, string> = {
@@ -29,13 +31,7 @@ const TABLE_STATUS_FILTERS = ["ALL", "In Progress", "Planned", "Complete", "Acti
 type TableStatusFilter = typeof TABLE_STATUS_FILTERS[number];
 
 const formatTimestamp = (ts: any): string => {
-  if (!ts) return "";
-  if (typeof ts.toDate === 'function') return ts.toDate().toLocaleDateString();
-  if (ts.seconds) return new Date(ts.seconds * 1000).toLocaleDateString();
-  try {
-    const d = new Date(ts);
-    return isNaN(d.getTime()) ? "" : d.toLocaleDateString();
-  } catch { return ""; }
+  return normalizeDate(ts)?.toLocaleDateString() || "N/A";
 };
 
 const getEvmColorClass = (val: any) => {
@@ -119,7 +115,7 @@ export default function AviationExecutiveControlRoom() {
       setWorkbenchStates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     }, (error) => console.error("Firestore project_workbench_states listener error:", error));
     const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (snapshot) => {
-      setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED"));
     }, (error) => console.error("Firestore raid_matrix listener error:", error));
 
     return () => { 
@@ -151,10 +147,7 @@ export default function AviationExecutiveControlRoom() {
     return filteredProjects.map(p => p.id);
   }, [filteredProjects, allProjects, activeProgram, selectedProjectIds]);
 
-  const calculateVarianceDays = (base: string, forecast: string) => {
-    if (!base || !forecast) return 0;
-    return Math.round((new Date(forecast).getTime() - new Date(base).getTime()) / 86400000);
-  };
+  const calculateVarianceDays = varianceDays;
 
   const filteredRollups = useMemo(() => {
     return filteredProjects.map(project => {
@@ -163,24 +156,24 @@ export default function AviationExecutiveControlRoom() {
       
       const currentRisksText = rollupDoc?.currentRisksText || "";
       const mitigationPlanText = rollupDoc?.mitigationPlanText || "Pending Review";
+      const projectReports = globalReports.filter(report => report.projectId === project.id);
       
       if (wState) {
-        const plannedValue = wState.evm?.plannedValue ?? 0;
-        const earnedValue = wState.evm?.earnedValue ?? 0;
-        const actualCost = wState.evm?.actualCost ?? 0;
-        
-        const costVariance = earnedValue - actualCost;
-        const scheduleVariance = earnedValue - plannedValue;
-        
-        const cpi = actualCost > 0 ? (earnedValue / actualCost) : 1.0;
-        const spi = plannedValue > 0 ? (earnedValue / plannedValue) : 1.0;
+        const evm = calculateEvm(wState.evm || {});
+        const { plannedValue, earnedValue, actualCost, costVariance, scheduleVariance } = evm;
+        const cpi = evm.cpi ?? 0;
+        const spi = evm.spi ?? 0;
+        const reportingCutoff = resolveReportingCutoff(projectReports, wState.lastSavedAt);
         
         const criticalBlockersCount = (wState.dependencies || []).filter((d: any) => d.status === "Active Block").length;
         
-        const totalSlippageDays = (wState.milestones || []).reduce((sum: number, m: any) => {
-          const slip = calculateVarianceDays(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate);
-          return sum + (slip > 0 ? slip : 0);
-        }, 0);
+        const criticalMilestone = (wState.milestones || [])
+          .map((m: any) => ({
+            name: m.tradeMilestone || m.name || "Unnamed milestone",
+            variance: calculateVarianceDays(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate),
+          }))
+          .filter((entry: any) => entry.variance !== null)
+          .reduce((current: any, entry: any) => !current || entry.variance > current.variance ? entry : current, null);
 
         return {
           id: project.id,
@@ -192,15 +185,18 @@ export default function AviationExecutiveControlRoom() {
           spi,
           costVariance,
           scheduleVariance,
-          statusHealthIndicator: wState.statusHealthIndicator || (costVariance < 0 || totalSlippageDays > 14 || spi < 1 ? "Critical Risk" : "On Track"),
+          statusHealthIndicator: wState.statusHealthIndicator || (costVariance < 0 || spi < 1 ? "Critical Risk" : "On Track"),
           criticalBlockersCount,
-          totalSlippageDays,
+          criticalMilestoneVarianceDays: criticalMilestone?.variance ?? null,
+          criticalMilestoneName: criticalMilestone?.name || "",
           lastSignOffBy: wState.lastSavedBy || "System",
           lastSignOffAt: wState.lastSavedAt || null,
           latestPeriod: wState.lastSavedAt ? `Saved ${formatTimestamp(wState.lastSavedAt)}` : "No PM sync",
           currentRisksText,
           mitigationPlanText,
-          evmMetrics: { plannedValue, earnedValue, actualCost }
+          evmMetrics: { plannedValue, earnedValue, actualCost },
+          reportingCutoff: reportingCutoff.toISOString(),
+          milestones: wState.milestones || [],
         };
       } else {
         return {
@@ -215,7 +211,8 @@ export default function AviationExecutiveControlRoom() {
           scheduleVariance: 0,
           statusHealthIndicator: "On Track",
           criticalBlockersCount: 0,
-          totalSlippageDays: 0,
+          criticalMilestoneVarianceDays: null,
+          criticalMilestoneName: "",
           lastSignOffBy: "N/A",
           lastSignOffAt: null,
           latestPeriod: "Nominal Path Conditions",
@@ -225,7 +222,7 @@ export default function AviationExecutiveControlRoom() {
         };
       }
     });
-  }, [filteredProjects, workbenchStates, rollups]);
+  }, [filteredProjects, workbenchStates, rollups, globalReports]);
 
   const filteredGlobalReports = useMemo(() => {
     // Prevents the historical status reports archive table from going blank
@@ -267,7 +264,7 @@ export default function AviationExecutiveControlRoom() {
   // 🟢 4. RECALCULATE KPIs WITH LIVE CONSTRAINTS
   const totalMasterBudget = allProjects.reduce((acc, curr) => acc + (curr.budget || 0), 0) || 1;
   const totalBudget = filteredProjects.reduce((acc, curr) => acc + (curr.budget || 0), 0);
-  const totalActuals = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.actualCost || 0), 0) || (totalBudget * 0.42); 
+  const totalActuals = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.actualCost || 0), 0);
   const activeChangeOrders = filteredProjects.filter(p => p.isUnplannedInjection).length;
 
   // Sum the quantity of milestones in live project_workbench_states matching type === "Construction" and showOnDashboard === true
@@ -286,35 +283,55 @@ export default function AviationExecutiveControlRoom() {
 
   const activeDependenciesCount = constructionDependenciesCount;
 
-  // 🟢 5. DYNAMIC S-CURVE GENERATION ALIGNED WITH ACTIVE CALENDAR HORIZONS
+  // 🟢 5. TRUTHFUL TO-DATE EVM SERIES. Historical values are never interpolated.
   const dynamicSCurveData = useMemo(() => {
-    // 🧮 Extract chronological bounds straight out of the active calendar widget selection
-    const startYear = new Date(calendarBounds.startDateStr).getFullYear() || 2024;
-    const endYear = new Date(calendarBounds.endDateStr).getFullYear() || 2027;
-    
-    const activeStates = workbenchStates.filter(s => activeProjectIds.includes(s.id) || Boolean(s.projectId && activeProjectIds.includes(s.projectId)));
-    
-    const points = [];
-    const totalYears = Math.max(1, endYear - startYear);
-    
-    for (let y = startYear; y <= endYear; y++) {
-      const t = (y - startYear) / totalYears;
-      
-      // Smoothstep S-curve cumulative curve interpolation ($3t^2 - 2t^3$)
-      const smoothT = 3 * t * t - 2 * t * t * t; 
-      
-      // Establishes a scaling factor to cleanly transition curve values across custom viewport ranges
-      const factor = 0.05 + 0.95 * smoothT;
-      
-      points.push({
-        targetDate: `${y}`,
-        Planned: Math.round(totalBudget * factor),
-        Actual: Math.round(totalActuals * factor)
+    const reportRecords = globalReports.filter(report => Boolean(report.projectId && activeProjectIds.includes(report.projectId)) && report.evmMetrics);
+    const dates = new Set<string>();
+    const datedReports = reportRecords.flatMap(report => {
+      const date = normalizeDate(report.periodEnd)
+        || extractReportingPeriodEnd(report.reportPeriod || report.reportingPeriod)
+        || normalizeDate(report.createdAt || report.timestamp);
+      if (!date) return [];
+      const key = date.toISOString().slice(0, 10);
+      dates.add(key);
+      return [{ ...report, date }];
+    });
+
+    filteredRollups.forEach((rollup: any) => {
+      const cutoff = normalizeDate(rollup.reportingCutoff);
+      if (cutoff) dates.add(cutoff.toISOString().slice(0, 10));
+      const completion = (rollup.milestones || []).map((m: any) => normalizeDate(m.baselineEnd || m.baselineEndDate)).filter((date: Date | null): date is Date => date !== null).sort((a: Date, b: Date) => b.getTime() - a.getTime())[0];
+      if (completion) dates.add(completion.toISOString().slice(0, 10));
+    });
+
+    return [...dates].sort().map(periodDate => {
+      const pointDate = normalizeDate(periodDate)!;
+      let planned = 0;
+      let actual = 0;
+      let earned = 0;
+      let hasActual = false;
+
+      filteredRollups.forEach((rollup: any) => {
+        const projectReports = datedReports.filter(report => report.projectId === rollup.projectId && report.date <= pointDate).sort((a, b) => b.date.getTime() - a.date.getTime());
+        const cutoff = normalizeDate(rollup.reportingCutoff);
+        const completion = (rollup.milestones || []).map((m: any) => normalizeDate(m.baselineEnd || m.baselineEndDate)).filter((date: Date | null): date is Date => date !== null).sort((a: Date, b: Date) => b.getTime() - a.getTime())[0];
+        const latest = projectReports[0]?.evmMetrics;
+        const current = cutoff && cutoff <= pointDate ? rollup.evmMetrics : undefined;
+        const values = current || latest;
+
+        if (completion && pointDate >= completion) planned += rollup.budget || 0;
+        else planned += values?.plannedValue || 0;
+
+        if (cutoff && pointDate <= cutoff && values) {
+          actual += values.actualCost || 0;
+          earned += values.earnedValue || 0;
+          hasActual = true;
+        }
       });
-    }
-    
-    return points;
-  }, [workbenchStates, activeProjectIds, totalBudget, totalActuals, calendarBounds]);
+
+      return { targetDate: periodDate, Planned: planned, Actual: hasActual ? actual : null, Earned: hasActual ? earned : null };
+    });
+  }, [globalReports, activeProjectIds, filteredRollups]);
 
   // 🟢 6. DYNAMIC ACTIVE THREAT FILTERING (RAID MATRIX COUPLING)
   const dynamicRisks = useMemo(() => {
@@ -374,7 +391,7 @@ export default function AviationExecutiveControlRoom() {
       reportingPeriod: "Past 14 Days",
       totalProjectsActive: filteredRollups.length,
       filterContext: activeProgram === "ALL" && selectedProjectIds.length === 0 ? "Global Portfolio" : `${activeProgram} Track (${selectedProjectIds.length > 0 ? selectedProjectIds.join(', ') : 'All Projects'})`,
-      evm: { totalBudget, plannedCost: totalPlannedCost || totalBudget * 0.45, actualCost: totalActualCost || totalBudget * 0.42, aggregateSV: aggregateSV || 0, aggregateCV: aggregateCV || 0 },
+      evm: { totalBudget, plannedCost: totalPlannedCost, actualCost: totalActualCost, aggregateSV, aggregateCV },
       criticalMilestones: criticalMilestones,
       consolidatedRisks: consolidatedRisks.length > 0 ? consolidatedRisks : [{ project: "N/A", risk: "No critical risks reported in this selection.", mitigation: "Continue monitoring.", status: "Nominal" }],
       quality: { observationsCreated: criticalBlockers.length, observationsResolved: Math.round(criticalBlockers.length * 0.7) }
@@ -513,7 +530,7 @@ export default function AviationExecutiveControlRoom() {
                         <TableCell className="text-xs font-semibold">{m.tradeMilestone || m.name}</TableCell>
                         <TableCell className="text-[10px] font-mono">{baseDate || "N/A"}</TableCell>
                         <TableCell className="text-[10px] font-mono">{forecastDate || "N/A"}</TableCell>
-                        <TableCell><span className={`text-[10px] font-bold font-mono ${variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
+                        <TableCell><span className={`text-[10px] font-bold font-mono ${variance === null ? 'text-slate-400' : variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance === null ? "N/A" : variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
                         <TableCell>
                           <Badge 
                             variant="outline" 
@@ -577,7 +594,7 @@ export default function AviationExecutiveControlRoom() {
       {/* S-CURVE & THREAT REGISTER */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6">
         <Card className="border-slate-200 shadow-sm rounded-sm xl:col-span-2 bg-white">
-          <CardHeader className="bg-slate-50 border-b py-2"><CardTitle className="text-xs font-bold text-slate-700 uppercase tracking-wider">Budget Performance (Aggregated S-Curve Projections)</CardTitle></CardHeader>
+          <CardHeader className="bg-slate-50 border-b py-2"><CardTitle className="text-xs font-bold text-slate-700 uppercase tracking-wider">Budget Performance (To-Date S-Curve)</CardTitle></CardHeader>
           <CardContent className="p-4 h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={dynamicSCurveData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
@@ -592,10 +609,11 @@ export default function AviationExecutiveControlRoom() {
                   }} 
                 />
                 <YAxis stroke="#94a3b8" style={{ fontSize: '11px', fontFamily: 'monospace' }} tickFormatter={(val) => `$${(val / 1000000).toFixed(1)}M`} />
-                <Tooltip formatter={(value: any) => [`$${value.toLocaleString(undefined, {maximumFractionDigits: 0})}`, '']} />
+                <Tooltip formatter={(value: any) => [value === null ? "N/A" : `$${value.toLocaleString(undefined, {maximumFractionDigits: 0})}`, '']} />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Line type="monotone" dataKey="Planned" stroke="#142E88" strokeWidth={3} dot={{ r: 4 }} />
                 <Line type="monotone" dataKey="Actual" stroke="#1EA7F4" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="Earned" stroke="#10B981" strokeWidth={3} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>

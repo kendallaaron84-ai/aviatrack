@@ -14,6 +14,7 @@ import { getAuth } from "firebase/auth";
 import { db, auth } from "@/lib/firebase";
 import { collection, onSnapshot, addDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+import { formatItemNumber } from "@/lib/field-observation-utils";
 
 const STAGES = ["Construction", "Commission", "ORAT Trials", "Close-Out - Operations"];
 const WEATHER_OPTIONS = ["Raining", "Dry", "Hot", "Cold"];
@@ -269,13 +270,21 @@ export default function FieldIntakePage() {
         search_tags: parent_search_tags
       };
 
-      const docRef = await addDoc(collection(db, "field_observations"), fieldReportPayload);
+      const idToken = await currentUser.getIdToken();
+      const allocationResponse = await fetch("/api/field-observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify(fieldReportPayload),
+      });
+      const allocation = await allocationResponse.json();
+      if (!allocationResponse.ok) throw new Error(allocation.error || "Unable to allocate Field Observation number.");
+      const docRef = { id: allocation.id };
 
       // Pre-calculate progress tracking items for files
       const progressItems: any[] = [];
       const uploadsToRun: { id: string; file: File; obsId: string; storageRefInstance: any }[] = [];
 
-      for (const obs of observationsList) {
+      for (const [observationIndex, obs] of observationsList.entries()) {
         if (obs.attachedFiles && obs.attachedFiles.length > 0) {
           for (const file of obs.attachedFiles) {
             const uId = crypto.randomUUID();
@@ -353,7 +362,7 @@ export default function FieldIntakePage() {
         cloudUrlsByObs[item.obsId].push(downloadUrl);
       }
 
-      for (const obs of observationsList) {
+      for (const [observationIndex, obs] of observationsList.entries()) {
         const cloudImageUrls = cloudUrlsByObs[obs.id] || [];
 
         // [ENHANCEMENT 4] Normalization search tags for the sub-observation
@@ -371,7 +380,12 @@ export default function FieldIntakePage() {
           description: obs.description,
           createdAt: submissionTimestamp,
           itemPhotos: cloudImageUrls,
-          search_tags: sub_search_tags
+          search_tags: sub_search_tags,
+          itemNumber: formatItemNumber(allocation.sequenceNumber, observationIndex + 1),
+          itemSequence: observationIndex + 1,
+          reportNumber: allocation.reportNumber,
+          reportSequence: allocation.sequenceNumber,
+          parentObservationId: docRef.id,
         });
       }
 

@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Dependency, Milestone, Project } from "@/types/portfolio";
+import { formatVarianceDays, normalizeDate, varianceDays } from "@/lib/date-utils";
 
 export interface TimelineDateWindow {
   startDateStr: string;
@@ -31,14 +32,6 @@ const milestoneDate = (milestone: Milestone) => {
   return milestone.forecastEnd || milestone.forecastEndDate || milestone.baselineEnd || milestone.baselineEndDate;
 };
 
-const varianceDays = (baseline?: string, current?: string) => {
-  if (!baseline || !current) return 0;
-  const baselineTime = new Date(baseline).getTime();
-  const currentTime = new Date(current).getTime();
-  if (!Number.isFinite(baselineTime) || !Number.isFinite(currentTime)) return 0;
-  return Math.round((currentTime - baselineTime) / 86_400_000);
-};
-
 export function DynamicPortfolioTimeline({
   projects,
   milestones,
@@ -57,13 +50,13 @@ export function DynamicPortfolioTimeline({
     onDateWindowChange?.(next);
   };
 
-  const startTime = new Date(activeWindow.startDateStr).getTime();
-  const endTime = new Date(activeWindow.endDateStr).getTime();
+  const startTime = normalizeDate(activeWindow.startDateStr)?.getTime() ?? 0;
+  const endTime = normalizeDate(activeWindow.endDateStr)?.getTime() ?? startTime + 1;
   const duration = Math.max(1, endTime - startTime);
   const getPosition = (date?: string) => {
     if (!date) return -1;
-    const time = new Date(date).getTime();
-    if (!Number.isFinite(time)) return -1;
+    const time = normalizeDate(date)?.getTime();
+    if (time === undefined) return -1;
     return ((time - startTime) / duration) * 100;
   };
 
@@ -116,7 +109,7 @@ export function DynamicPortfolioTimeline({
             <div><span className="block text-[9px] font-bold uppercase text-slate-400">{complete ? "Actual End" : "Forecast End"}</span>{currentDate || "N/A"}</div>
           </div>
           <div className="flex justify-between border-t border-slate-800 pt-1 font-mono text-[9px] text-slate-400">
-            <span>Variance</span><span className={variance > 0 ? "text-red-400" : "text-emerald-400"}>{variance > 0 ? `+${variance}d` : `${variance}d`}</span>
+            <span>Variance</span><span className={variance !== null && variance > 0 ? "text-red-400" : "text-emerald-400"}>{formatVarianceDays(variance)}</span>
           </div>
         </div>
       </div>
@@ -127,7 +120,7 @@ export function DynamicPortfolioTimeline({
     const times = items.flatMap(item => [
       item.forecastStart || item.forecastStartDate || item.baselineStart || item.baselineStartDate,
       milestoneDate(item),
-    ]).filter((date): date is string => Boolean(date)).map(date => new Date(date).getTime()).filter(Number.isFinite);
+    ]).map(date => normalizeDate(date)?.getTime()).filter((time): time is number => time !== undefined);
     if (!times.length) return { left: 0, width: 100 };
     const left = Math.max(0, Math.min(100, ((Math.min(...times) - startTime) / duration) * 100));
     const right = Math.max(0, Math.min(100, ((Math.max(...times) - startTime) / duration) * 100));

@@ -14,6 +14,7 @@ import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { DynamicPortfolioTimeline } from "@/components/dashboard/DynamicPortfolioTimeline";
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
+import { varianceDays } from "@/lib/date-utils";
 
 // Definitive Master Schema Mapping Lists
 const FACILITY_ASSETS = [
@@ -107,7 +108,7 @@ export default function YteviaExecutiveControlRoom() {
     const unsubRollups = onSnapshot(collection(db, "portfolio_rollups"), (s) => setRollups(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore portfolio_rollups listener error:", error));
     const unsubGlobalReports = onSnapshot(query(collection(db, "status_reports"), orderBy("createdAt", "desc")), (s) => setGlobalReports(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore status_reports listener error:", error));
     const unsubWorkbench = onSnapshot(collection(db, "project_workbench_states"), (s) => setWorkbenchStates(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore project_workbench_states listener error:", error));
-    const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (s) => setRaidItems(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore raid_matrix listener error:", error));
+    const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (s) => setRaidItems(s.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED")), (error) => console.error("Firestore raid_matrix listener error:", error));
     const unsubObs = onSnapshot(collection(db, "field_observations"), (s) => setFieldObservations(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore field_observations listener error:", error));
     
     return () => {
@@ -128,10 +129,7 @@ export default function YteviaExecutiveControlRoom() {
     return Array.from(new Set(selectedAssets.flatMap(assetId => ELEVATION_LEVELS[assetId] || [])));
   }, [selectedAssets]);
 
-  const calculateVarianceDays = (base: string, forecast: string) => {
-    if (!base || !forecast) return 0;
-    return Math.round((new Date(forecast).getTime() - new Date(base).getTime()) / 86400000);
-  };
+  const calculateVarianceDays = varianceDays;
 
   // Filter master projects based on physical assets
   const filteredProjects = useMemo(() => {
@@ -168,11 +166,14 @@ export default function YteviaExecutiveControlRoom() {
         
         const criticalBlockersCount = (wState.dependencies || []).filter((d: any) => d.status === "Active Block").length;
         
-        const totalSlippageDays = (wState.milestones || []).reduce((sum: number, m: any) => {
-          if (m.status === "Complete") return sum;
-          const slip = calculateVarianceDays(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate);
-          return sum + (slip > 0 ? slip : 0);
-        }, 0);
+        const criticalMilestone = (wState.milestones || [])
+          .filter((m: any) => m.status !== "Complete")
+          .map((m: any) => ({
+            name: m.tradeMilestone || m.name || "Unnamed milestone",
+            variance: calculateVarianceDays(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate),
+          }))
+          .filter((entry: any) => entry.variance !== null)
+          .reduce((current: any, entry: any) => !current || entry.variance > current.variance ? entry : current, null);
 
         return {
           id: project.id,
@@ -184,9 +185,10 @@ export default function YteviaExecutiveControlRoom() {
           spi,
           costVariance,
           scheduleVariance,
-          statusHealthIndicator: wState.statusHealthIndicator || (costVariance < 0 || totalSlippageDays > 14 || spi < 1 ? "Critical Risk" : "On Track"),
+          statusHealthIndicator: wState.statusHealthIndicator || (costVariance < 0 || spi < 1 ? "Critical Risk" : "On Track"),
           criticalBlockersCount,
-          totalSlippageDays,
+          criticalMilestoneVarianceDays: criticalMilestone?.variance ?? null,
+          criticalMilestoneName: criticalMilestone?.name || "",
           lastSignOffBy: wState.lastSavedBy || "System",
           lastSignOffAt: wState.lastSavedAt || null,
           latestPeriod: wState.lastSavedAt ? `Saved ${formatTimestamp(wState.lastSavedAt)}` : "No PM sync",
@@ -207,7 +209,8 @@ export default function YteviaExecutiveControlRoom() {
           scheduleVariance: 0,
           statusHealthIndicator: "On Track",
           criticalBlockersCount: 0,
-          totalSlippageDays: 0,
+          criticalMilestoneVarianceDays: null,
+          criticalMilestoneName: "",
           lastSignOffBy: "N/A",
           lastSignOffAt: null,
           latestPeriod: "Nominal Path Conditions",
@@ -314,8 +317,8 @@ export default function YteviaExecutiveControlRoom() {
 
   // Aggregate EVM totals
   const totalBudget = filteredRollups.reduce((sum, r) => sum + r.budget, 0);
-  const totalActuals = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.actualCost || 0), 0) || (totalBudget * 0.42); 
-  const totalEarned = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.earnedValue || 0), 0) || (totalBudget * 0.45);
+  const totalActuals = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.actualCost || 0), 0);
+  const totalEarned = filteredRollups.reduce((sum, r) => sum + (r.evmMetrics?.earnedValue || 0), 0);
   const activeChangeOrders = 3;
 
   // Status Reports Pagination
@@ -635,7 +638,7 @@ export default function YteviaExecutiveControlRoom() {
                         <TableCell className="text-xs font-semibold">{m.tradeMilestone || m.name}</TableCell>
                         <TableCell className="text-[10px] font-mono">{baseDate || "N/A"}</TableCell>
                         <TableCell className="text-[10px] font-mono">{completionDate || "N/A"}</TableCell>
-                        <TableCell><span className={`text-[10px] font-bold font-mono ${variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
+                        <TableCell><span className={`text-[10px] font-bold font-mono ${variance !== null && variance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{variance === null ? 'N/A' : variance > 0 ? `+${variance} Days` : `${variance} Days`}</span></TableCell>
                         <TableCell>
                           <Badge 
                             variant="outline" 

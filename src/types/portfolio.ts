@@ -1,4 +1,4 @@
-export type PortfolioDateValue = string | Date | { seconds?: number; toDate?: () => Date } | null;
+export type PortfolioDateValue = string | number | Date | { seconds?: number; nanoseconds?: number; toDate?: () => Date } | null;
 
 export interface EVMData {
   plannedValue: number;
@@ -80,6 +80,8 @@ export interface RollupState {
   statusHealthIndicator?: string;
   criticalBlockersCount?: number;
   totalSlippageDays?: number;
+  criticalMilestoneVarianceDays?: number | null;
+  criticalMilestoneName?: string;
   lastSavedBy?: string;
   lastSavedAt?: PortfolioDateValue;
   lastSignOffBy?: string;
@@ -107,6 +109,22 @@ export interface RAIDItem {
   probability?: number;
   assignedOwner?: string;
   submittedAt?: string;
+  sourceKey?: string;
+  sourceKeys?: string[];
+  sourceReferences?: Array<{
+    sourceKey: string;
+    sourceType: string;
+    sourceDocumentId: string;
+    parentDocumentId?: string;
+    observedAt?: string;
+    addedAt: string;
+  }>;
+  lastDetectedAt?: string;
+  detectionCount?: number;
+  auditTrail?: Array<Record<string, unknown>>;
+  mergedIntoRaidId?: string;
+  mergeStatus?: "CANONICAL" | "MERGED";
+  mergedAt?: string;
 }
 
 export interface StatusReport {
@@ -115,6 +133,7 @@ export interface StatusReport {
   projectName?: string;
   reportPeriod?: string;
   reportingPeriod?: string;
+  periodEnd?: PortfolioDateValue;
   submittedBy?: string;
   loggedBy?: string;
   createdAt?: PortfolioDateValue;

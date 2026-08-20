@@ -55,7 +55,7 @@ export default function RiskClusterDashboard() {
   useEffect(() => {
     const q = query(collection(db, "raid_matrix"));
     const unsub = onSnapshot(q, (snap) => {
-      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED");
       setRaidqItems(items);
       
       if (selectedItem) {
@@ -189,7 +189,7 @@ export default function RiskClusterDashboard() {
 
     // 11 Strict PMO Specification Column Headers
     const headers = [
-      "Date Created", "Title", "Description", "Comments", "RAIDQ Type", 
+      "Project ID", "Project Name", "Date Created", "Title", "Description", "Comments", "RAIDQ Type",
       "Probability", "Importance", "Assigned Owner", "ROAM Category", 
       "Observation Abstract Context", "Historical Triage Notes"
     ];
@@ -201,6 +201,8 @@ export default function RiskClusterDashboard() {
         : "";
 
       return [
+        item.projectId || "Unassigned",
+        item.projectName || "Unnamed Project",
         item.createdAt || "",
         (item.title || "").replace(/"/g, '""'),
         (item.description || "").replace(/"/g, '""'),

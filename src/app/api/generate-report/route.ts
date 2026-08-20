@@ -60,7 +60,13 @@ export async function POST(request: Request) {
     
     // Fetch active registry matrices
     const raidSnapshot = await db.collection("raid_matrix").get();
-    const raidItems = raidSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    const raidItems = raidSnapshot.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter((item: any) => item.mergeStatus !== "MERGED")
+      .filter((item: any) => !projectId || projectId === "all" || item.projectId === projectId);
+
+    const projectDocs = await db.collection("admin_projects").get();
+    const projectNames = new Map(projectDocs.docs.map(doc => [doc.id, doc.data().name || doc.data().projectName || doc.id]));
 
     const projectSnapshot = projectId && projectId !== "all" 
       ? await db.collection("admin_projects").doc(projectId).get()
@@ -94,6 +100,7 @@ export async function POST(request: Request) {
 
     raidItems.forEach((item: any, idx: number) => {
       reportText += `${idx + 1}. [${item.classification}] ${item.title} (Owner: ${item.assignedOwner || "Unassigned"})\n`;
+      reportText += `   Project ID: ${item.projectId || "Unassigned"} | Project Name: ${item.projectName || projectNames.get(item.projectId) || "Unnamed Project"}\n`;
       reportText += `   Description: ${item.description || "No description provided."}\n`;
       reportText += `   Probability Score: ${item.probability || "N/A"} | Importance: ${item.importance || "N/A"}\n\n`;
     });

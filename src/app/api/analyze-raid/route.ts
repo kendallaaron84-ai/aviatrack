@@ -1,244 +1,113 @@
-// File: src/app/api/analyze-raid/route.ts
-
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { getFirebaseAdmin } from "@/lib/firebase-admin";
 import { z } from "zod";
+import { getFirebaseAdmin } from "@/lib/firebase-admin";
+import { CLOSED_RAID_STATUSES, deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, riskSimilarity } from "@/lib/risk-utils";
 
-const analyzeRaidRequestSchema = z.object({
-  force: z.boolean().optional(),
-}).strict();
+const requestSchema = z.object({ force: z.boolean().optional() }).strict();
+const analyzedItemSchema = z.object({ title: z.string(), description: z.string(), classification: z.enum(["Risk", "Assumption", "Issue", "Dependency"]), importance: z.enum(["Critical", "Mandatory", "High", "Medium", "Low"]), probability: z.coerce.number().int().min(1).max(4) });
+const analysisSchema = z.object({ items: z.array(z.object({ inputIndex: z.number().int().nonnegative(), analysis: analyzedItemSchema })) });
+const relationshipSchema = z.object({ relationship: z.enum(["NEW_RISK", "RELATED_EXISTING_RISK", "SAME_RISK"]), existingRaidId: z.string().optional(), confidence: z.number().min(0).max(1) });
+
+type SourceReference = { sourceKey: string; sourceType: "Project Journal" | "Field Observation"; sourceDocumentId: string; parentDocumentId?: string; projectId: string; observedAt?: string; text: string };
+const cleanJson = (value: string) => value.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
 
 export async function POST(request: Request) {
   const authorization = request.headers.get("authorization");
-  const token = authorization?.startsWith("Bearer ")
-    ? authorization.slice(7).trim()
-    : "";
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!token) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  let admin;
   try {
-    admin = getFirebaseAdmin();
+    const admin = getFirebaseAdmin();
     await admin.auth.verifyIdToken(token);
-  } catch {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+    const body = requestSchema.safeParse(await request.json().catch(() => ({})));
+    if (!body.success) return NextResponse.json({ error: "Bad Request", details: body.error.flatten() }, { status: 400 });
 
-  try {
-    let requestPayload: unknown = {};
-    try {
-      const requestText = await request.text();
-      requestPayload = requestText ? JSON.parse(requestText) : {};
-    } catch {
-      return NextResponse.json({
-        error: "Bad Request",
-        details: { formErrors: ["Request body must contain valid JSON."], fieldErrors: {} },
-      }, { status: 400 });
-    }
-
-    const validation = analyzeRaidRequestSchema.safeParse(requestPayload);
-    if (!validation.success) {
-      return NextResponse.json({
-        error: "Bad Request",
-        details: validation.error.flatten(),
-      }, { status: 400 });
-    }
-    
-    // 🔐 Clean private key of any hidden enclosing string formatting from environments
-
-    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-
-    if (!geminiApiKey) {
-      return NextResponse.json({
-        error: "Missing critical Gemini API Key."
-      }, { status: 400 });
-    }
-
-    const adminDb = admin.db;
-    const ai = new GoogleGenAI({ 
-      apiKey: geminiApiKey 
-    });
-
-    const configSnap = await adminDb.collection("admin_settings").doc("risk_profile").get();
-    const systemInstructionOverride = configSnap.exists 
-      ? configSnap.data()?.riskPrompt 
-      : "You are an expert infrastructure construction systems risk evaluator.";
-
-    // Fetch up to 25 items from each source concurrently
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) return NextResponse.json({ error: "Missing critical Gemini API Key." }, { status: 400 });
+    const ai = new GoogleGenAI({ apiKey });
+    const db = admin.db;
     const [journalSnapshot, fieldSnapshot] = await Promise.all([
-      adminDb.collectionGroup("entries").limit(25).get(),
-      adminDb.collectionGroup("sub_observations")
-        .where("observationType", "==", "Risk")
-        .limit(25).get()
+      db.collectionGroup("entries").limit(25).get(),
+      db.collectionGroup("sub_observations").where("observationType", "==", "Risk").limit(25).get(),
     ]);
 
-    const itemsToProcess: string[] = [];
+    const parentIds = [...new Set(fieldSnapshot.docs.map(doc => doc.ref.parent.parent?.id).filter((id): id is string => Boolean(id)))];
+    const parentDocs = await Promise.all(parentIds.map(id => db.collection("field_observations").doc(id).get()));
+    const parents = new Map(parentDocs.map(doc => [doc.id, doc.data() || {}]));
+    const sources: SourceReference[] = [];
 
-    // Source A: Extract from Project Journal logs (/project_journals/{projectId}/entries/{docId})
-    journalSnapshot.forEach((doc) => {
+    journalSnapshot.forEach(doc => {
+      const projectId = doc.ref.parent.parent?.id || "Global";
       const data = doc.data();
-      const pathSegments = doc.ref.path.split("/");
-      const inferredProjectId = pathSegments[1] || "Global Context";
-
-      if (data.text) {
-        itemsToProcess.push(`[ID: ${doc.id}][Project: ${inferredProjectId}][Source: Project Journal] Text: ${data.text}`);
-      }
+      if (data.text) sources.push({ sourceKey: journalSourceKey(projectId, doc.id), sourceType: "Project Journal", sourceDocumentId: doc.id, projectId, observedAt: data.timestamp, text: data.text });
     });
-
-    // Aggregate unique parent observation document IDs to avoid N+1 queries
-    const parentObservationIds = new Set<string>();
-    fieldSnapshot.forEach((doc) => {
-      const pathSegments = doc.ref.path.split("/");
-      const parentObservationId = pathSegments[1];
-      if (parentObservationId) {
-        parentObservationIds.add(parentObservationId);
-      }
-    });
-
-    const parentIdList = Array.from(parentObservationIds);
-    const parentSnaps = await Promise.all(
-      parentIdList.map(async (parentObsId) => {
-        const snap = await adminDb.collection("field_observations").doc(parentObsId).get();
-        return { id: parentObsId, exists: snap.exists, data: snap.data() };
-      })
-    );
-
-    const parentProjectMap: Record<string, string> = {};
-    parentSnaps.forEach((p) => {
-      if (p.exists && p.data?.projectId) {
-        parentProjectMap[p.id] = p.data.projectId;
-      } else {
-        parentProjectMap[p.id] = "Global";
-      }
-    });
-
-    // Source B: Extract from nested field observation sub-collections (/field_observations/{obsId}/sub_observations/{subId})
-    fieldSnapshot.forEach((doc) => {
+    fieldSnapshot.forEach(doc => {
+      const parentId = doc.ref.parent.parent?.id || "Global";
+      const parent = parents.get(parentId) || {};
       const data = doc.data();
-      const pathSegments = doc.ref.path.split("/");
-      const parentObservationId = pathSegments[1] || "Global";
-      const inferredProjectId = parentProjectMap[parentObservationId] || "Global";
-
-      if (data.description) {
-        itemsToProcess.push(`[ID: ${doc.id}][Project: ${inferredProjectId}][ParentObs: ${parentObservationId}][Source: Field Observation] Description: ${data.description}`);
-      }
+      if (data.description) sources.push({ sourceKey: fieldObservationSourceKey(parentId, doc.id, parent.reportNumber, data.itemNumber), sourceType: "Field Observation", sourceDocumentId: doc.id, parentDocumentId: parentId, projectId: parent.projectId || "Global", observedAt: data.createdAt || parent.submittedAt, text: data.description });
     });
+    if (!sources.length) return NextResponse.json({ message: "No active text logs or risk updates found to evaluate.", processedCount: 0 });
 
-    if (itemsToProcess.length === 0) {
-      return NextResponse.json({ message: "No active text logs or risk updates found to evaluate." });
-    }
-
-    const textToAnalyze = itemsToProcess.join("\n\n");
-
+    const riskProfile = await db.collection("admin_settings").doc("risk_profile").get();
+    const systemInstruction = riskProfile.data()?.riskPrompt || "You are an expert infrastructure construction systems risk evaluator.";
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Analyze these construction updates and map them out into structured matrix items. Extrapolate reasonable probability integers (1-4) and importance categories based on context:\n\n${textToAnalyze}`,
-      config: {
-        systemInstruction: systemInstructionOverride,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "OBJECT",
-          properties: {
-            items: {
-              type: "ARRAY",
-              items: {
-                type: "OBJECT",
-                properties: {
-                  sourceReferenceId: { type: "STRING" },
-                  projectId: { type: "STRING" },
-                  sourceType: { type: "STRING", enum: ["Project Journal", "Field Observation"] },
-                  title: { type: "STRING" },
-                  description: { type: "STRING" },
-                  classification: { type: "STRING", enum: ["Risk", "Assumption", "Issue", "Dependency"] },
-                  importance: { type: "STRING", enum: ["Critical", "Mandatory", "High", "Medium", "Low"] },
-                  probability: { type: "INTEGER", description: "Likelihood weight score rating from 1 to 4" }
-                },
-                required: ["sourceReferenceId", "projectId", "sourceType", "title", "description", "classification", "importance", "probability"],
-              },
-            },
-          },
-        },
-      },
+      contents: `Analyze each indexed source independently. Return one structured analysis per source index. Do not create or infer source identifiers.\n\n${sources.map((source, index) => `[${index}] Project: ${source.projectId}; Source: ${source.sourceType}; Text: ${source.text}`).join("\n\n")}`,
+      config: { systemInstruction, responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { items: { type: "ARRAY", items: { type: "OBJECT", properties: { inputIndex: { type: "INTEGER" }, analysis: { type: "OBJECT", properties: { title: { type: "STRING" }, description: { type: "STRING" }, classification: { type: "STRING", enum: ["Risk", "Assumption", "Issue", "Dependency"] }, importance: { type: "STRING", enum: ["Critical", "Mandatory", "High", "Medium", "Low"] }, probability: { type: "INTEGER" } }, required: ["title", "description", "classification", "importance", "probability"] } }, required: ["inputIndex", "analysis"] } } }, required: ["items"] } },
     });
+    const analyzed = analysisSchema.parse(JSON.parse(cleanJson(response.text || "{\"items\":[]}")));
+    let createdCount = 0, mergedCount = 0, skippedCount = 0;
 
-    let jsonText = response.text || "{\"items\":[]}";
-    
-    // 🛡️ GLITCH-PROOF STRING CLEANING: Strips Markdown blocks safely using standard string slicing instead of regular expressions
-    jsonText = jsonText.trim();
-    if (jsonText.startsWith("```")) {
-      const firstLineBreak = jsonText.indexOf("\n");
-      if (firstLineBreak !== -1) {
-        jsonText = jsonText.substring(firstLineBreak + 1);
-      } else {
-        jsonText = jsonText.substring(3);
+    for (const result of analyzed.items) {
+      const source = sources[result.inputIndex];
+      if (!source) continue;
+      const sourceRef = db.collection("raid_matrix").doc(deterministicRaidId(source.sourceKey));
+      const candidatesSnap = await db.collection("raid_matrix").where("projectId", "==", source.projectId).get();
+      const activeCandidates = candidatesSnap.docs.filter(doc => {
+        const data = doc.data();
+        return doc.id !== sourceRef.id && data.mergeStatus !== "MERGED" && !CLOSED_RAID_STATUSES.has(normalizeRiskText(data.status));
+      });
+      let target = activeCandidates.find(doc => (doc.data().sourceKeys || []).includes(source.sourceKey));
+      if (!target) target = activeCandidates.find(doc => normalizeRiskText(doc.data().title) === normalizeRiskText(result.analysis.title) || riskSimilarity(`${doc.data().title} ${doc.data().description}`, `${result.analysis.title} ${result.analysis.description}`) >= 0.85);
+
+      if (!target && activeCandidates.length) {
+        const semantic = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Compare the detected risk with same-project active candidates. Be conservative.\nDetected: ${JSON.stringify(result.analysis)}\nCandidates: ${JSON.stringify(activeCandidates.map(doc => ({ id: doc.id, title: doc.data().title, description: doc.data().description })))}`,
+          config: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { relationship: { type: "STRING", enum: ["NEW_RISK", "RELATED_EXISTING_RISK", "SAME_RISK"] }, existingRaidId: { type: "STRING" }, confidence: { type: "NUMBER" } }, required: ["relationship", "confidence"] } },
+        });
+        const relationship = relationshipSchema.parse(JSON.parse(cleanJson(semantic.text || "{}")));
+        if (relationship.relationship !== "NEW_RISK" && relationship.confidence >= 0.9 && relationship.existingRaidId) target = activeCandidates.find(doc => doc.id === relationship.existingRaidId);
       }
-    }
-    if (jsonText.endsWith("```")) {
-      jsonText = jsonText.substring(0, jsonText.length - 3);
-    }
-    jsonText = jsonText.trim();
 
-    const { items } = JSON.parse(jsonText);
+      await db.runTransaction(async transaction => {
+        const existingSource = await transaction.get(sourceRef);
+        if (existingSource.exists) { skippedCount++; return; }
+        const now = new Date().toISOString();
+        const evidence = { sourceKey: source.sourceKey, sourceType: source.sourceType, sourceDocumentId: source.sourceDocumentId, ...(source.parentDocumentId ? { parentDocumentId: source.parentDocumentId } : {}), ...(source.observedAt ? { observedAt: source.observedAt } : {}), addedAt: now };
 
-    const batch = adminDb.batch();
-    
-    for (const item of items) {
-      const raidRef = adminDb.collection("raid_matrix").doc();
-      const assignedOwner = item.classification === "Dependency" || item.classification === "Issue" 
-        ? "IT Consultant" 
-        : "ORAT Team";
+        if (target) {
+          const targetSnap = await transaction.get(target.ref);
+          if (!targetSnap.exists) return;
+          const data = targetSnap.data()!;
+          transaction.update(target.ref, { sourceKey: data.sourceKey || source.sourceKey, sourceKeys: [...new Set([...(data.sourceKeys || (data.sourceKey ? [data.sourceKey] : [])), source.sourceKey])], sourceReferences: [...(data.sourceReferences || []), evidence], lastDetectedAt: now, detectionCount: Number(data.detectionCount || 1) + 1, auditTrail: [...(data.auditTrail || []), { action: "EVIDENCE_MERGED", sourceKey: source.sourceKey, at: now }], mergeStatus: "CANONICAL" });
+          transaction.set(sourceRef, { projectId: source.projectId, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], mergeStatus: "MERGED", mergedIntoRaidId: target.id, mergedAt: now, status: "Merged", createdAt: now });
+          mergedCount++;
+          return;
+        }
 
-      const rawProb = parseInt(item.probability);
-      const parsedProbability = isNaN(rawProb) ? 2 : Math.max(1, Math.min(4, rawProb));
-      const importanceVal = item.importance || "Medium";
-
-      const title = item.title || "";
-      const description = item.description || "";
-      const classification = item.classification || "Risk";
-      const roamCategory = classification;
-      const projectId = item.projectId || "Global";
-      const status = "Identified";
-
-      const textPool = [title, description, classification, roamCategory, status, projectId].join(" ").toLowerCase();
-      const search_tags = Array.from(new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
-
-      batch.set(raidRef, {
-        sourceReferenceId: item.sourceReferenceId || "",
-        projectId,
-        sourceType: item.sourceType || "Field Observation",
-        title,
-        description,
-        classification,
-        roamCategory,
-        importance: importanceVal,
-        impactLevel: importanceVal, // populate both keys for cross-layout support
-        probability: parsedProbability,
-        status,
-        assignedOwner,
-        isItOwned: assignedOwner === "IT Consultant",
-        dispositionNotes: "",
-        historicalComments: [],
-        sourceContextLink: item.sourceType === "Project Journal" 
-          ? "PM Daily Log / Workbench Tracker" 
-          : "Field Site Inspection Update", 
-        analyzedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        search_tags
+        const assignedOwner = ["Dependency", "Issue"].includes(result.analysis.classification) ? "IT Consultant" : "ORAT Team";
+        const textPool = [result.analysis.title, result.analysis.description, result.analysis.classification, source.projectId].join(" ").toLowerCase();
+        transaction.set(sourceRef, { ...result.analysis, projectId: source.projectId, sourceReferenceId: source.sourceDocumentId, sourceType: source.sourceType, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], roamCategory: result.analysis.classification, impactLevel: result.analysis.importance, status: "Identified", assignedOwner, isItOwned: assignedOwner === "IT Consultant", dispositionNotes: "", historicalComments: [], auditTrail: [{ action: "RISK_CREATED", sourceKey: source.sourceKey, at: now }], detectionCount: 1, lastDetectedAt: now, mergeStatus: "CANONICAL", analyzedAt: now, createdAt: now, search_tags: [...new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(word => word.length > 1))] });
+        createdCount++;
       });
     }
-    
-    await batch.commit();
 
-    return NextResponse.json({ 
-      success: true, 
-      processedCount: items ? items.length : 0 
-    });
-
+    return NextResponse.json({ success: true, processedCount: analyzed.items.length, createdCount, mergedCount, skippedCount });
   } catch (error: any) {
     console.error("RAID Pipeline Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

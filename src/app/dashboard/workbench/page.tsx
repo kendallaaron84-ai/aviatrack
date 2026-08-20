@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { db, auth } from "@/lib/firebase"; 
 import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc, getDocs } from "firebase/firestore";
+import { durationDays, varianceDays } from "@/lib/date-utils";
+import { legacyReportNumber } from "@/lib/field-observation-utils";
 
 // STATIC CONSTANTS (Must be outside the component)
 const TRADE_DIVISIONS = [
@@ -213,11 +215,11 @@ export default function ObservationWorkbenchPage() {
   const spi = evm.plannedValue > 0 ? (evm.earnedValue / evm.plannedValue).toFixed(2) : "0.00";
   const currentSpiNum = parseFloat(spi);
 
-  const calculateBaselineDuration = (start: string, end: string) => (!start || !end) ? 0 : Math.max(0, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 86400000));
-  const calculateMilestoneVariance = (baselineEnd: string, forecastEnd: string) => (!baselineEnd || !forecastEnd) ? 0 : Math.round((new Date(forecastEnd).getTime() - new Date(baselineEnd).getTime()) / 86400000);
+  const calculateBaselineDuration = (start: string, end: string) => durationDays(start, end);
+  const calculateMilestoneVariance = (baselineEnd: string, forecastEnd: string) => varianceDays(baselineEnd, forecastEnd);
   const calculateEstimatedDuration = (baselineStart: string, baselineEnd: string) => {
     const baseDuration = calculateBaselineDuration(baselineStart, baselineEnd);
-    if (baseDuration === 0) return 0;
+    if (baseDuration === null || baseDuration === 0) return baseDuration;
     if (currentSpiNum <= 0) return baseDuration; 
     return parseFloat((baseDuration / currentSpiNum).toFixed(1));
   };
@@ -299,7 +301,7 @@ export default function ObservationWorkbenchPage() {
       }
       
       const allObservations = obsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const headers = ["Project ID Context", "Project Scope / Name", "Program (Track & Stage)", "Site Conditions", "Observation Type", "Log Entry Narrative", "Worksite Location Summary", "Resolution Designation Type", "Resolution Status History"];
+      const headers = ["Report Number", "Project ID Context", "Project Scope / Name", "Program (Track & Stage)", "Site Conditions", "Observation Type", "Log Entry Narrative", "Worksite Location Summary", "Resolution Designation Type", "Resolution Status History"];
 
       const rows = allObservations.map((obs: any) => {
         const programTrackStage = `[${obs.program || "TDP"}] - ${obs.stage || "Construction"}`;
@@ -307,7 +309,7 @@ export default function ObservationWorkbenchPage() {
         const locationSummary = `${obs.location || "General Site"} - Level ${obs.buildingLevel || "0"} (Sector ${obs.sectorId || "N/A"})`;
         const auditTrail = obs.resolutionHistory ? obs.resolutionHistory.map((h: any) => `[${h.operator || "PM"} ${new Date(h.timestamp).toLocaleDateString()}]: ${h.notes}`).join(" | ") : (obs.text || obs.description || "No triage updates compiled.");
 
-        return [obs.projectId || "Unassigned ID", obs.projectName || "Unnamed System Target", programTrackStage.replace(/"/g, '""'), siteConditions.replace(/"/g, '""'), obs.observationType || obs.type || "General", (obs.text || obs.description || "Narrative log context missing").replace(/"/g, '""'), locationSummary.replace(/"/g, '""'), obs.resolutionDesignation || "Unassigned", auditTrail.replace(/"/g, '""')];
+        return [obs.reportNumber || legacyReportNumber(obs.id), obs.projectId || "Unassigned ID", obs.projectName || "Unnamed System Target", programTrackStage.replace(/"/g, '""'), siteConditions.replace(/"/g, '""'), obs.observationType || obs.type || "General", (obs.text || obs.description || "Narrative log context missing").replace(/"/g, '""'), locationSummary.replace(/"/g, '""'), obs.resolutionDesignation || "Unassigned", auditTrail.replace(/"/g, '""')];
       });
 
       const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
@@ -355,20 +357,27 @@ export default function ObservationWorkbenchPage() {
     try {
       const currentUser = auth.currentUser?.email || "Kendall Aaron";
       const timestamp = new Date().toISOString();
-      const totalScheduleSlippageDays = milestones.reduce((sum, m) => { const delta = calculateMilestoneVariance(m.baselineEnd, m.forecastEnd); return sum + (delta > 0 ? delta : 0); }, 0);
+      const milestoneVariances = milestones.map(m => ({
+        name: m.tradeMilestone || m.name || "Unnamed milestone",
+        variance: calculateMilestoneVariance(m.baselineEnd || m.baselineEndDate, m.forecastEnd || m.forecastEndDate),
+      })).filter((entry): entry is { name: string; variance: number } => entry.variance !== null);
+      const criticalMilestone = milestoneVariances.reduce<{ name: string; variance: number } | null>((current, entry) =>
+        !current || entry.variance > current.variance ? entry : current, null);
       const reportingPeriodString = `${reportForm.periodStart} to ${reportForm.periodEnd}`;
 
       await addDoc(collection(db, "project_status_reports", selectedProject, "biweekly_reports"), { ...reportForm, reportingPeriod: reportingPeriodString, evmMetrics: { plannedValue: evm.plannedValue, earnedValue: evm.earnedValue, actualCost: evm.actualCost, costVariance, scheduleVariance, cpi, spi }, milestonesSnapshot: milestones, dependenciesSnapshot: dependencies, loggedBy: currentUser, timestamp });
-      await setDoc(doc(db, "portfolio_rollups", selectedProject), { projectId: selectedProject, projectName: activeProjectData.name, budgetAllocation: activeProjectData.budget, costVariance, scheduleVariance, cpi: parseFloat(cpi), spi: currentSpiNum, totalSlippageDays: totalScheduleSlippageDays, criticalBlockersCount: activeConstructionDependenciesCount, latestPeriod: reportingPeriodString, executiveSummaryLookAhead: reportForm.lookAhead, currentRisksText: reportForm.risks, mitigationPlanText: reportForm.resolutionPlan, lastSignOffBy: currentUser, lastSignOffAt: timestamp, statusHealthIndicator: costVariance < 0 || hasCriticalPathBlocker || totalScheduleSlippageDays > 14 || currentSpiNum < 1 ? "Critical Risk" : "On Track" });
+      await setDoc(doc(db, "portfolio_rollups", selectedProject), { projectId: selectedProject, projectName: activeProjectData.name, budgetAllocation: activeProjectData.budget, costVariance, scheduleVariance, cpi: parseFloat(cpi), spi: currentSpiNum, criticalMilestoneVarianceDays: criticalMilestone?.variance ?? null, criticalMilestoneName: criticalMilestone?.name || "", criticalBlockersCount: activeConstructionDependenciesCount, latestPeriod: reportingPeriodString, executiveSummaryLookAhead: reportForm.lookAhead, currentRisksText: reportForm.risks, mitigationPlanText: reportForm.resolutionPlan, lastSignOffBy: currentUser, lastSignOffAt: timestamp, statusHealthIndicator: costVariance < 0 || hasCriticalPathBlocker || currentSpiNum < 1 ? "Critical Risk" : "On Track" });
 
       await addDoc(collection(db, "status_reports"), {
         projectId: selectedProject,
         projectName: activeProjectData.name || selectedProject,
         reportPeriod: reportingPeriodString,
+        periodEnd: reportForm.periodEnd,
         submittedBy: currentUser,
-        cpi: parseFloat(cpi) || 1.0,
-        spi: currentSpiNum || 1.0,
-        statusHealth: costVariance < 0 || hasCriticalPathBlocker || totalScheduleSlippageDays > 14 || currentSpiNum < 1 ? "Critical Risk" : "On Track",
+        cpi: parseFloat(cpi),
+        spi: currentSpiNum,
+        evmMetrics: { plannedValue: evm.plannedValue, earnedValue: evm.earnedValue, actualCost: evm.actualCost, costVariance, scheduleVariance, cpi: parseFloat(cpi), spi: currentSpiNum },
+        statusHealth: costVariance < 0 || hasCriticalPathBlocker || currentSpiNum < 1 ? "Critical Risk" : "On Track",
         createdAt: timestamp,
         lookAhead: reportForm.lookAhead || "",
         risks: reportForm.risks || "",
@@ -619,8 +628,8 @@ export default function ObservationWorkbenchPage() {
                                           </TableCell>
                                           
                                           <TableCell className="py-2 text-center text-[10px] font-mono font-bold leading-tight">
-                                            <div className={startVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{startVar > 0 ? `+${startVar}d` : `${startVar}d`}</div>
-                                            <div className={endVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{endVar > 0 ? `+${endVar}d` : `${endVar}d`}</div>
+                                            <div className={startVar !== null && startVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{startVar === null ? 'N/A' : startVar > 0 ? `+${startVar}d` : `${startVar}d`}</div>
+                                            <div className={endVar !== null && endVar > 0 ? 'text-red-600' : 'text-emerald-600'}>{endVar === null ? 'N/A' : endVar > 0 ? `+${endVar}d` : `${endVar}d`}</div>
                                           </TableCell>
                                           
                                           <TableCell className="py-2">

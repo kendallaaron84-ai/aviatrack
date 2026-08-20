@@ -13,6 +13,7 @@ import { Search, AlertTriangle, Clock, ShieldAlert, FileSearch } from "lucide-re
 // Centralized Secure Firebase Imports
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot, getDocs } from "firebase/firestore";
+import { legacyReportNumber } from "@/lib/field-observation-utils";
 
 export default function PMDashboardPage() {
   const [observations, setObservations] = useState<any[]>([]);
@@ -228,7 +229,7 @@ export default function PMDashboardPage() {
                         : (obs.requiresActionAlert ? 'bg-red-50/30' : 'bg-white')
                     }`}
                   >
-                    <TableCell className="font-semibold text-slate-900 text-xs">FOR-{obs.id.slice(0, 6).toUpperCase()}</TableCell>
+                    <TableCell className="font-semibold text-slate-900 text-xs">{obs.reportNumber || legacyReportNumber(obs.id)}</TableCell>
                     <TableCell className="text-xs whitespace-nowrap">{obs.submittedAt ? obs.submittedAt.split('T')[0] : 'N/A'}</TableCell>
                     <TableCell className="text-xs font-medium">{obs.programName}</TableCell>
                     <TableCell className="max-w-[180px] truncate text-xs" title={obs.projectName}>{obs.projectName}</TableCell>
