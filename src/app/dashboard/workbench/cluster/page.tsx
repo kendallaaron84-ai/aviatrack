@@ -38,6 +38,7 @@ export default function RiskClusterDashboard() {
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [commentText, setCommentText] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<any>(null);
   const [migrationResult, setMigrationResult] = useState<any>(null);
   const [dedupeDryRunResult, setDedupeDryRunResult] = useState<any>(null);
   const [isMigrationRunning, setIsMigrationRunning] = useState(false);
@@ -142,7 +143,8 @@ export default function RiskClusterDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "RAID ingestion failed.");
-      alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0} items.`);
+      setSyncResult(data);
+      alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0}; Created: ${data.createdCount || 0}; Merged: ${data.mergedCount || 0}; Skipped: ${data.skippedCount || 0}; Errors: ${data.errorCount || 0}.`);
     } catch (err) {
       console.error(err);
       alert("Failed to safely establish background pipeline tunnel.");
@@ -378,6 +380,7 @@ export default function RiskClusterDashboard() {
               <Button disabled={isMigrationRunning} variant="outline" onClick={handleDedupeDryRun}>Run Dedupe Dry-Run</Button>
             </div>
             {migrationResult && <pre className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(migrationResult, null, 2)}</pre>}
+            {syncResult && <pre data-testid="raid-sync-result" className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(syncResult, null, 2)}</pre>}
             {dedupeDryRunResult && <pre className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(dedupeDryRunResult, null, 2)}</pre>}
           </CardContent>
         </Card>

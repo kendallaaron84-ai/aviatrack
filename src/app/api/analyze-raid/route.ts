@@ -108,10 +108,15 @@ export async function POST(request: Request) {
     const projectDocs = await db.collection("admin_projects").get();
     const projectNames = new Map(projectDocs.docs.map(doc => [doc.id, String(doc.data().name || doc.data().projectName || doc.id)]));
     let createdCount = 0, mergedCount = 0, skippedCount = 0;
+    const createdRecords: Array<{ raidId: string; projectId: string; projectName: string; probability: number }> = [];
+    const mergedRecords: Array<{ canonicalRaidId: string | null; canonicalDocumentId: string; projectId: string }> = [];
 
     for (const result of analyzed.items) {
       const source = sources[result.inputIndex];
-      if (!source) continue;
+      if (!source) {
+        skippedCount++;
+        continue;
+      }
       const lease = await acquireProjectLease(db, source.projectId);
       try {
       const sourceRef = db.collection("raid_matrix").doc(deterministicRaidId(source.sourceKey));
@@ -135,7 +140,7 @@ export async function POST(request: Request) {
 
       const outcome = await db.runTransaction(async transaction => {
         const existingSource = await transaction.get(sourceRef);
-        if (existingSource.exists) return "skipped" as const;
+        if (existingSource.exists) return { kind: "skipped" as const };
         const now = new Date().toISOString();
         const evidence = { sourceKey: source.sourceKey, sourceType: source.sourceType, sourceDocumentId: source.sourceDocumentId, ...(source.parentDocumentId ? { parentDocumentId: source.parentDocumentId } : {}), ...(source.observedAt ? { observedAt: source.observedAt } : {}), addedAt: now };
 
@@ -145,7 +150,12 @@ export async function POST(request: Request) {
           const data = targetSnap.data()!;
           transaction.update(target.ref, { sourceKey: data.sourceKey || source.sourceKey, sourceKeys: [...new Set([...(data.sourceKeys || (data.sourceKey ? [data.sourceKey] : [])), source.sourceKey])], sourceReferences: [...(data.sourceReferences || []), evidence], lastDetectedAt: now, detectionCount: Number(data.detectionCount || 1) + 1, auditTrail: [...(data.auditTrail || []), { action: "EVIDENCE_MERGED", sourceKey: source.sourceKey, at: now }], mergeStatus: "CANONICAL" });
           transaction.set(sourceRef, { projectId: source.projectId, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], mergeStatus: "MERGED", mergedIntoRaidId: target.id, mergedIntoRaidNumber: data.raidNumber || null, mergedAt: now, status: "Merged", createdAt: now });
-          return "merged" as const;
+          return {
+            kind: "merged" as const,
+            canonicalRaidId: typeof data.raidNumber === "string" ? data.raidNumber : null,
+            canonicalDocumentId: target.id,
+            projectId: String(data.projectId || source.projectId),
+          };
         }
 
         const counterRef = db.collection("counters").doc("raid_records");
@@ -161,19 +171,42 @@ export async function POST(request: Request) {
         const textPool = [result.analysis.title, result.analysis.description, result.analysis.classification, source.projectId].join(" ").toLowerCase();
         transaction.set(counterRef, { kind: "raid_business_number", lastSequence: raidSequence, updatedAt: now }, { merge: true });
         transaction.set(sourceRef, { ...result.analysis, raidNumber, raidSequence, numberingVersion: 1, projectId: source.projectId, projectName: projectNames.get(source.projectId) || source.projectId, sourceReferenceId: source.sourceDocumentId, sourceType: source.sourceType, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], roamCategory: "New / Unassigned", impactLevel: result.analysis.importance, status: "Identified", assignedOwner, isItOwned: assignedOwner === "IT Consultant", dispositionNotes: "", historicalComments: [], auditTrail: [{ action: "RISK_CREATED", sourceKey: source.sourceKey, raidNumber, at: now }], detectionCount: 1, lastDetectedAt: now, mergeStatus: "CANONICAL", analyzedAt: now, createdAt: now, search_tags: [...new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(word => word.length > 1))] });
-        return "created" as const;
+        return {
+          kind: "created" as const,
+          raidId: raidNumber,
+          projectId: source.projectId,
+          projectName: projectNames.get(source.projectId) || source.projectId,
+          probability: result.analysis.probability,
+        };
       });
-      if (outcome === "created") createdCount++;
-      else if (outcome === "merged") mergedCount++;
-      else skippedCount++;
+      if (outcome.kind === "created") {
+        createdCount++;
+        createdRecords.push({ raidId: outcome.raidId, projectId: outcome.projectId, projectName: outcome.projectName, probability: outcome.probability });
+      } else if (outcome.kind === "merged") {
+        mergedCount++;
+        mergedRecords.push({ canonicalRaidId: outcome.canonicalRaidId, canonicalDocumentId: outcome.canonicalDocumentId, projectId: outcome.projectId });
+      } else {
+        skippedCount++;
+      }
       } finally {
         await releaseProjectLease(db, lease);
       }
     }
 
-    return NextResponse.json({ success: true, processedCount: analyzed.items.length, createdCount, mergedCount, skippedCount });
+    const counterSnapshot = await db.collection("counters").doc("raid_records").get();
+    return NextResponse.json({
+      success: true,
+      processedCount: analyzed.items.length,
+      createdCount,
+      mergedCount,
+      skippedCount,
+      errorCount: 0,
+      createdRecords,
+      mergedRecords,
+      counterValue: Number(counterSnapshot.data()?.lastSequence || 0),
+    });
   } catch (error: any) {
     console.error("RAID Pipeline Error:", error);
-    return NextResponse.json({ error: error.message }, { status: error instanceof ProjectIngestionBusyError ? 409 : 500 });
+    return NextResponse.json({ error: error.message, errorCount: 1 }, { status: error instanceof ProjectIngestionBusyError ? 409 : 500 });
   }
 }
