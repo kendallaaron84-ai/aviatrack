@@ -3,6 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { RAIDItem } from "@/types/portfolio";
+import { resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 type Severity = "ALL" | "Critical" | "Mandatory" | "High";
 
@@ -26,10 +27,14 @@ export function ActiveThreatRiskRegister({ risks, severity, onSeverityChange, st
           })}
         </div>
       </CardHeader>
-      <CardContent className="p-4 space-y-3">{filtered.length === 0 ? <div className="text-center text-slate-400 text-xs italic py-10">No matching threats currently registered in PM status updates.</div> : filtered.map(risk => <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
-        <div className="flex items-center justify-between mb-1"><span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">{risk.id}<Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge><span className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase" style={{ backgroundColor: statusColors[risk.roamCategory || ""] || statusColors[risk.status || ""] || "#EF4444" }}>{risk.roamCategory || risk.status}</span></span><Badge className={`text-[9px] font-bold rounded-xs shadow-none ${(risk.impact || risk.importance) === "Critical" ? "bg-red-50 text-red-700" : (risk.impact || risk.importance) === "Mandatory" ? "bg-amber-50 text-amber-700" : "bg-slate-50 text-slate-700"}`}>{risk.impact || risk.importance}</Badge></div>
+      <CardContent className="p-4 space-y-3">{filtered.length === 0 ? <div className="text-center text-slate-400 text-xs italic py-10">No matching threats currently registered in PM status updates.</div> : filtered.map(risk => {
+        const ownershipState = resolveRaidOwnershipState(risk as unknown as Record<string, unknown>);
+        return <div key={risk.id} className="border p-2.5 rounded-sm bg-white hover:border-slate-400 transition-all text-xs">
+        <div className="flex items-center justify-between mb-1"><span className="font-mono font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">{risk.raidNumber || risk.id}<Badge variant="secondary" className="text-[9px] font-mono rounded-xs px-1.5 py-0 shadow-none border-slate-200">{risk.spec}</Badge><span className="px-1.5 py-0.5 rounded-xs text-[8px] font-bold text-white uppercase" style={{ backgroundColor: statusColors[ownershipState] || "#EF4444" }}>{ownershipState}</span></span><Badge className={`text-[9px] font-bold rounded-xs shadow-none ${(risk.impact || risk.importance) === "Critical" ? "bg-red-50 text-red-700" : (risk.impact || risk.importance) === "Mandatory" ? "bg-amber-50 text-amber-700" : "bg-slate-50 text-slate-700"}`}>{risk.impact || risk.importance}</Badge></div>
         <h4 className="font-semibold text-slate-700 leading-tight">{risk.threat || risk.description || risk.title}</h4>
-      </div>)}</CardContent>
+        {risk.projectName && <p className="mt-1 text-[9px] font-mono text-slate-400">{risk.projectId} · {risk.projectName}</p>}
+      </div>;
+      })}</CardContent>
     </Card>
   );
 }

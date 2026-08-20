@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatVarianceDays, normalizeDate, varianceDays } from "./date-utils";
-import { buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "./evm-utils";
+import { addChronologicalTimestamps, buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "./evm-utils";
 
 test("normalizes supported date representations and rejects corrupt dates", () => {
   const expected = "2025-01-02";
@@ -56,4 +56,15 @@ test("does not carry AC/EV into a date without an exact snapshot", () => {
     { periodDate: "2026-06-30", Planned: 25, Actual: 20, Earned: 18 },
     { periodDate: "2026-07-31", Planned: 30, Actual: null, Earned: null },
   ]);
+});
+
+test("orders the reporting cutoff before a future planned completion on a numeric time axis", () => {
+  const points = addChronologicalTimestamps([
+    { targetDate: "2026-11-30", Planned: 100, Actual: null, Earned: null },
+    { targetDate: "2026-08-05", Planned: 60, Actual: 58, Earned: 55 },
+  ]);
+  assert.deepEqual(points.map(point => point.targetDate), ["2026-08-05", "2026-11-30"]);
+  assert.equal(points[1].Actual, null);
+  assert.equal(points[1].Earned, null);
+  assert.ok(points[0].timestamp < points[1].timestamp);
 });

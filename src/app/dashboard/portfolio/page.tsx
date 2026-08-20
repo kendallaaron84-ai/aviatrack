@@ -15,6 +15,7 @@ import { DynamicPortfolioTimeline } from "@/components/dashboard/DynamicPortfoli
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 import { varianceDays } from "@/lib/date-utils";
+import { createProjectNameMap, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Definitive Master Schema Mapping Lists
 const FACILITY_ASSETS = [
@@ -39,13 +40,7 @@ const DELIVERY_TRACKS = [
   { id: "IT_DIRECT", name: "IT-Managed (Direct CIP Contract Deliveries)" }
 ];
 
-const STATUS_COLORS: Record<string, string> = {
-  "New / Unassigned": "#EF4444",
-  "Owned": "#1A2D83",
-  "Mitigated": "#883AE1",
-  "Accepted": "#3B82F6",
-  "Resolved": "#10B981"
-};
+const STATUS_COLORS: Record<string, string> = RAID_OWNERSHIP_COLORS;
 
 const formatTimestamp = (ts: any): string => {
   if (!ts) return "";
@@ -306,9 +301,16 @@ export default function YteviaExecutiveControlRoom() {
   }, [calendarBounds]);
 
   // Risk register filtered list
+  const projectNames = useMemo(() => createProjectNameMap(allProjects), [allProjects]);
   const dynamicRisks = useMemo(() => {
-    return raidItems.filter((r: any) => activeProjectIds.includes(r.projectId || r.id));
-  }, [raidItems, activeProjectIds]);
+    return raidItems
+      .filter((risk: any) => activeProjectIds.includes(risk.projectId || risk.id))
+      .map((risk: any) => ({
+        ...risk,
+        projectName: resolveProjectName(risk.projectId, projectNames, risk.projectName),
+        ownershipState: resolveRaidOwnershipState(risk),
+      }));
+  }, [raidItems, activeProjectIds, projectNames]);
 
   const filteredRisks = useMemo(() => {
     if (severitySelection === "ALL") return dynamicRisks;
@@ -784,12 +786,12 @@ export default function YteviaExecutiveControlRoom() {
                     return (
                       <TableRow key={i} className="hover:bg-slate-50">
                         <TableCell className="pl-4 py-2">
-                          <p className="text-xs font-bold text-slate-800">{risk.subject || risk.title || risk.name || "Risk Item"}</p>
-                          <p className="text-[9px] font-mono text-slate-400 mt-0.5">Project: {risk.projectId || "Global"}</p>
+                          <p className="text-xs font-bold text-slate-800">{risk.raidNumber || risk.id} · {risk.subject || risk.title || risk.name || "Risk Item"}</p>
+                          <p className="text-[9px] font-mono text-slate-400 mt-0.5">Project: {risk.projectId || "Global"} · {risk.projectName}</p>
                         </TableCell>
                         <TableCell className="text-center py-2">
-                          <span className="inline-block px-1.5 py-0.5 rounded text-[8px] font-bold text-white uppercase font-sans" style={{ backgroundColor: STATUS_COLORS[risk.status || "New / Unassigned"] }}>
-                            {risk.status || "New / Unassigned"}
+                          <span className="inline-block px-1.5 py-0.5 rounded text-[8px] font-bold text-white uppercase font-sans" style={{ backgroundColor: STATUS_COLORS[risk.ownershipState] }}>
+                            {risk.ownershipState}
                           </span>
                         </TableCell>
                         <TableCell className="text-center py-2">

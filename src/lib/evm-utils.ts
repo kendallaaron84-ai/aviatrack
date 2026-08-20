@@ -78,3 +78,10 @@ export function buildSparseEvmSeries(
     };
   });
 }
+
+export function addChronologicalTimestamps<T extends { targetDate: DateLike }>(points: T[]) {
+  return points.flatMap(point => {
+    const date = normalizeDate(point.targetDate);
+    return date ? [{ ...point, timestamp: date.getTime() }] : [];
+  }).sort((left, right) => left.timestamp - right.timestamp);
+}

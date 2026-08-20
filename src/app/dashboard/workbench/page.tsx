@@ -153,7 +153,7 @@ export default function ObservationWorkbenchPage() {
     const unsubProjects = onSnapshot(qProjects, (snapshot) => {
       const projects = snapshot.docs.map(d => ({
         id: d.id,
-        name: d.data().name || "Unnamed Project",
+        name: d.data().name || d.data().projectName || d.id,
         track: d.data().program || "Unknown Track",
         budget: d.data().budget || 0
       }));

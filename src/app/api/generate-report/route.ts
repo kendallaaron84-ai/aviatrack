@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { getFirebaseAdmin } from "@/lib/firebase-admin";
 import { z } from "zod";
+import { normalizeRaidProbability, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 const generateReportRequestSchema = z.object({
   reportType: z.string().trim().min(1).max(100).optional(),
@@ -99,10 +100,10 @@ export async function POST(request: Request) {
     reportText += `\nDetailed RAID Matrices:\n`;
 
     raidItems.forEach((item: any, idx: number) => {
-      reportText += `${idx + 1}. [${item.classification}] ${item.title} (Owner: ${item.assignedOwner || "Unassigned"})\n`;
-      reportText += `   Project ID: ${item.projectId || "Unassigned"} | Project Name: ${item.projectName || projectNames.get(item.projectId) || "Unnamed Project"}\n`;
+      reportText += `${idx + 1}. RAID ID: ${item.raidNumber || item.id} | [${item.classification}] ${item.title} (Owner: ${item.assignedOwner || item.owner || "Unassigned"})\n`;
+      reportText += `   Project ID: ${item.projectId || "Unassigned"} | Project Name: ${resolveProjectName(item.projectId, projectNames, item.projectName)}\n`;
       reportText += `   Description: ${item.description || "No description provided."}\n`;
-      reportText += `   Probability Score: ${item.probability || "N/A"} | Importance: ${item.importance || "N/A"}\n\n`;
+      reportText += `   Probability Score: ${normalizeRaidProbability(item.probability)} / 4 | Importance: ${item.importance || "N/A"} | Ownership: ${resolveRaidOwnershipState(item)}\n\n`;
     });
 
     // Clean scrubbing: Removed all literal text references and hyper-links to AviaTrack/AviaITrack completely.

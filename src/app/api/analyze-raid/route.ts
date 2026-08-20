@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { DocumentReference, Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "@/lib/firebase-admin";
 import { CLOSED_RAID_STATUSES, deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, raidProjectLockId, riskSimilarity } from "@/lib/risk-utils";
+import { formatRaidNumber, normalizeRaidProbability } from "@/lib/raid-display-utils";
 
 const requestSchema = z.object({ force: z.boolean().optional() }).strict();
 const analyzedItemSchema = z.object({ title: z.string(), description: z.string(), classification: z.enum(["Risk", "Assumption", "Issue", "Dependency"]), importance: z.enum(["Critical", "Mandatory", "High", "Medium", "Low"]), probability: z.coerce.number().int().min(1).max(4) });
@@ -94,9 +95,18 @@ export async function POST(request: Request) {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: `Analyze each indexed source independently. Return one structured analysis per source index. Do not create or infer source identifiers.\n\n${sources.map((source, index) => `[${index}] Project: ${source.projectId}; Source: ${source.sourceType}; Text: ${source.text}`).join("\n\n")}`,
-      config: { systemInstruction, responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { items: { type: "ARRAY", items: { type: "OBJECT", properties: { inputIndex: { type: "INTEGER" }, analysis: { type: "OBJECT", properties: { title: { type: "STRING" }, description: { type: "STRING" }, classification: { type: "STRING", enum: ["Risk", "Assumption", "Issue", "Dependency"] }, importance: { type: "STRING", enum: ["Critical", "Mandatory", "High", "Medium", "Low"] }, probability: { type: "INTEGER" } }, required: ["title", "description", "classification", "importance", "probability"] } }, required: ["inputIndex", "analysis"] } } }, required: ["items"] } },
+      config: { systemInstruction, responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { items: { type: "ARRAY", items: { type: "OBJECT", properties: { inputIndex: { type: "INTEGER" }, analysis: { type: "OBJECT", properties: { title: { type: "STRING" }, description: { type: "STRING" }, classification: { type: "STRING", enum: ["Risk", "Assumption", "Issue", "Dependency"] }, importance: { type: "STRING", enum: ["Critical", "Mandatory", "High", "Medium", "Low"] }, probability: { type: "INTEGER", minimum: 1, maximum: 4 } }, required: ["title", "description", "classification", "importance", "probability"] } }, required: ["inputIndex", "analysis"] } } }, required: ["items"] } },
     });
-    const analyzed = analysisSchema.parse(JSON.parse(cleanJson(response.text || "{\"items\":[]}")));
+    const rawAnalysis = JSON.parse(cleanJson(response.text || "{\"items\":[]}"));
+    if (Array.isArray(rawAnalysis?.items)) {
+      rawAnalysis.items = rawAnalysis.items.map((item: any) => ({
+        ...item,
+        analysis: item?.analysis ? { ...item.analysis, probability: normalizeRaidProbability(item.analysis.probability) } : item?.analysis,
+      }));
+    }
+    const analyzed = analysisSchema.parse(rawAnalysis);
+    const projectDocs = await db.collection("admin_projects").get();
+    const projectNames = new Map(projectDocs.docs.map(doc => [doc.id, String(doc.data().name || doc.data().projectName || doc.id)]));
     let createdCount = 0, mergedCount = 0, skippedCount = 0;
 
     for (const result of analyzed.items) {
@@ -134,13 +144,23 @@ export async function POST(request: Request) {
           if (!targetSnap.exists) throw new Error("Selected canonical RAID record no longer exists; retry ingestion.");
           const data = targetSnap.data()!;
           transaction.update(target.ref, { sourceKey: data.sourceKey || source.sourceKey, sourceKeys: [...new Set([...(data.sourceKeys || (data.sourceKey ? [data.sourceKey] : [])), source.sourceKey])], sourceReferences: [...(data.sourceReferences || []), evidence], lastDetectedAt: now, detectionCount: Number(data.detectionCount || 1) + 1, auditTrail: [...(data.auditTrail || []), { action: "EVIDENCE_MERGED", sourceKey: source.sourceKey, at: now }], mergeStatus: "CANONICAL" });
-          transaction.set(sourceRef, { projectId: source.projectId, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], mergeStatus: "MERGED", mergedIntoRaidId: target.id, mergedAt: now, status: "Merged", createdAt: now });
+          transaction.set(sourceRef, { projectId: source.projectId, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], mergeStatus: "MERGED", mergedIntoRaidId: target.id, mergedIntoRaidNumber: data.raidNumber || null, mergedAt: now, status: "Merged", createdAt: now });
           return "merged" as const;
         }
 
+        const counterRef = db.collection("counters").doc("raid_records");
+        const counterSnap = await transaction.get(counterRef);
+        let lastSequence = Number(counterSnap.data()?.lastSequence || 1000);
+        if (!counterSnap.exists) {
+          const latestNumbered = await transaction.get(db.collection("raid_matrix").orderBy("raidSequence", "desc").limit(1));
+          lastSequence = Number(latestNumbered.docs[0]?.data().raidSequence || 1000);
+        }
+        const raidSequence = Math.max(1000, lastSequence) + 1;
+        const raidNumber = formatRaidNumber(raidSequence);
         const assignedOwner = ["Dependency", "Issue"].includes(result.analysis.classification) ? "IT Consultant" : "ORAT Team";
         const textPool = [result.analysis.title, result.analysis.description, result.analysis.classification, source.projectId].join(" ").toLowerCase();
-        transaction.set(sourceRef, { ...result.analysis, projectId: source.projectId, sourceReferenceId: source.sourceDocumentId, sourceType: source.sourceType, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], roamCategory: result.analysis.classification, impactLevel: result.analysis.importance, status: "Identified", assignedOwner, isItOwned: assignedOwner === "IT Consultant", dispositionNotes: "", historicalComments: [], auditTrail: [{ action: "RISK_CREATED", sourceKey: source.sourceKey, at: now }], detectionCount: 1, lastDetectedAt: now, mergeStatus: "CANONICAL", analyzedAt: now, createdAt: now, search_tags: [...new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(word => word.length > 1))] });
+        transaction.set(counterRef, { kind: "raid_business_number", lastSequence: raidSequence, updatedAt: now }, { merge: true });
+        transaction.set(sourceRef, { ...result.analysis, raidNumber, raidSequence, numberingVersion: 1, projectId: source.projectId, projectName: projectNames.get(source.projectId) || source.projectId, sourceReferenceId: source.sourceDocumentId, sourceType: source.sourceType, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], roamCategory: "New / Unassigned", impactLevel: result.analysis.importance, status: "Identified", assignedOwner, isItOwned: assignedOwner === "IT Consultant", dispositionNotes: "", historicalComments: [], auditTrail: [{ action: "RISK_CREATED", sourceKey: source.sourceKey, raidNumber, at: now }], detectionCount: 1, lastDetectedAt: now, mergeStatus: "CANONICAL", analyzedAt: now, createdAt: now, search_tags: [...new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(word => word.length > 1))] });
         return "created" as const;
       });
       if (outcome === "created") createdCount++;

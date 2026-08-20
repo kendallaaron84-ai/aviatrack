@@ -10,18 +10,11 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter, Download } from "lucide-react";
+import { createProjectNameMap, normalizeRaidProbability, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Operational Parametric Normalization Weights
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
 const IMPACT_WEIGHTS: Record<string, number> = { Critical: 1.0, Mandatory: 0.8, High: 0.6, Medium: 0.4, Low: 0.2, "N/A": 0.0 };
-
-const STATUS_COLORS: Record<string, string> = {
-  Resolved: "#10B981",   
-  Accepted: "#3B82F6",   
-  Mitigated: "#883AE1",  
-  Owned: "#1A2D83",      
-  "New / Unassigned": "#EF4444"
-};
 
 const generateSearchTags = (item: any, additionalPatches: Record<string, any> = {}) => {
   const merged = { ...item, ...additionalPatches };
@@ -41,6 +34,7 @@ const generateSearchTags = (item: any, additionalPatches: Record<string, any> = 
 
 export default function RiskClusterDashboard() {
   const [raidqItems, setRaidqItems] = useState<any[]>([]);
+  const [projectNames, setProjectNames] = useState<Map<string, string>>(new Map());
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [commentText, setCommentText] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
@@ -57,22 +51,40 @@ export default function RiskClusterDashboard() {
     const unsub = onSnapshot(q, (snap) => {
       const items = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED");
       setRaidqItems(items);
-      
-      if (selectedItem) {
-        const freshTarget = items.find(i => i.id === selectedItem.id);
-        if (freshTarget) setSelectedItem(freshTarget);
-      }
     }, (error) => console.error("Firestore raid_matrix listener error:", error));
     return () => unsub();
-  }, [selectedItem]);
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "admin_projects"), snapshot => {
+      setProjectNames(createProjectNameMap(snapshot.docs.map(document => ({ id: document.id, ...document.data() }))));
+    }, error => console.error("Firestore admin_projects listener error:", error));
+    return () => unsub();
+  }, []);
+
+  const resolvedItems = useMemo(() => raidqItems.map(item => {
+    const ownershipState = resolveRaidOwnershipState(item);
+    return {
+      ...item,
+      projectName: resolveProjectName(item.projectId, projectNames, item.projectName),
+      ownershipState,
+      probability: normalizeRaidProbability(item.probability),
+    };
+  }), [raidqItems, projectNames]);
+
+  useEffect(() => {
+    if (!selectedItem) return;
+    const freshTarget = resolvedItems.find(item => item.id === selectedItem.id);
+    if (freshTarget) setSelectedItem(freshTarget);
+  }, [resolvedItems, selectedItem?.id]);
 
   // Comprehensive Date & Importance Filter Engine
   const filteredItems = useMemo(() => {
-  return raidqItems.filter(item => {
+  return resolvedItems.filter(item => {
     if (importanceFilter !== "ALL" && item.importance !== importanceFilter) return false;
 
     // 🆕 PROJECT CLASSIFICATION FILTER CHECK
-    if (selectedProject !== "ALL" && (item.projectName || item.projectId) !== selectedProject) return false;
+    if (selectedProject !== "ALL" && item.projectId !== selectedProject) return false;
 
     if (item.createdAt) {
       const timestamp = new Date(item.createdAt);
@@ -81,28 +93,34 @@ export default function RiskClusterDashboard() {
     }
     return true;
   });
-}, [raidqItems, importanceFilter, fromDate, toDate, selectedProject]);
+}, [resolvedItems, importanceFilter, fromDate, toDate, selectedProject]);
 
   // Compute live contextual counts based on complete backend query snapshot
   const importanceCounts = useMemo(() => {
     const counts: Record<string, number> = { Critical: 0, Mandatory: 0, High: 0, Medium: 0, Low: 0 };
-    raidqItems.forEach(item => {
+    resolvedItems.forEach(item => {
       if (counts[item.importance] !== undefined) {
         counts[item.importance]++;
       }
     });
     return counts;
-  }, [raidqItems]);
+  }, [resolvedItems]);
 
   // Coordinate Data Mapping normalizer
   const clusteredData = useMemo(() => {
     return filteredItems.map(item => ({
       ...item,
       x: IMPACT_WEIGHTS[item.importance] || 0.2, 
-      y: PROBABILITY_WEIGHTS[Number(item.probability)] || 0.0,
-      nodeColor: STATUS_COLORS[item.roamCategory] || "#EF4444"
+      y: PROBABILITY_WEIGHTS[item.probability],
+      nodeColor: RAID_OWNERSHIP_COLORS[resolveRaidOwnershipState(item)]
     }));
   }, [filteredItems]);
+
+  const projectOptions = useMemo(() => [...new Map(
+    resolvedItems
+      .filter(item => item.projectId)
+      .map(item => [item.projectId, item.projectName]),
+  ).entries()].sort((left, right) => String(left[1]).localeCompare(String(right[1]))), [resolvedItems]);
 
   // AI Sync Log ingestion with query deduplication defenses
   const handleTriggerAiSync = async () => {
@@ -136,7 +154,7 @@ export default function RiskClusterDashboard() {
         previousClassification: selectedItem.classification || "Risk",
         previousProbability: selectedItem.probability !== undefined ? selectedItem.probability : 0,
         previousImportance: selectedItem.importance || "Medium",
-        previousOwner: selectedItem.owner || "Unassigned",
+        previousOwner: selectedItem.assignedOwner || selectedItem.owner || "Unassigned",
         modifiedField: field,
         oldValue: selectedItem[field] || "None",
         newValue: value,
@@ -188,10 +206,9 @@ export default function RiskClusterDashboard() {
       return;
     }
 
-    // 11 Strict PMO Specification Column Headers
     const headers = [
-      "Project ID", "Project Name", "Date Created", "Title", "Description", "Comments", "RAIDQ Type",
-      "Probability", "Importance", "Assigned Owner", "ROAM Category", 
+      "RAID ID", "Project ID", "Project Name", "Date Created", "Title", "Description", "Comments", "RAIDQ Type",
+      "Probability", "Importance", "Assigned Owner", "ROAM Category / Ownership State",
       "Observation Abstract Context", "Historical Triage Notes"
     ];
 
@@ -202,17 +219,18 @@ export default function RiskClusterDashboard() {
         : "";
 
       return [
+        item.raidNumber || item.id,
         item.projectId || "Unassigned",
-        item.projectName || "Unnamed Project",
+        item.projectName,
         item.createdAt || "",
         (item.title || "").replace(/"/g, '""'),
         (item.description || "").replace(/"/g, '""'),
         formattedNotesLog.replace(/"/g, '""'),
         item.classification || "Risk",
-        item.probability !== undefined ? `${item.probability} / 4` : "0 / 4",
+        normalizeRaidProbability(item.probability) + " / 4",
         item.importance || "Medium",
-        item.owner || "Unassigned",
-        item.roamCategory || "New / Unassigned",
+        item.assignedOwner || item.owner || "Unassigned",
+        item.ownershipState,
         (item.description || "").replace(/"/g, '""'),  // Maps abstract context
         formattedNotesLog.replace(/"/g, '""')         // Maps triage notes history
       ];
@@ -302,6 +320,15 @@ export default function RiskClusterDashboard() {
         <span className="text-[10px] font-mono font-bold uppercase text-slate-400 mr-2 flex items-center gap-1">
           <Filter className="h-3 w-3" /> Importance Filters:
         </span>
+        <select
+          value={selectedProject}
+          onChange={event => setSelectedProject(event.target.value)}
+          className="border border-slate-200 bg-white px-2 py-1 text-[10px] font-mono text-slate-700"
+          aria-label="Filter RAID items by project"
+        >
+          <option value="ALL">All Projects</option>
+          {projectOptions.map(([projectId, projectName]) => <option key={projectId} value={projectId}>{projectName}</option>)}
+        </select>
         <button
           onClick={() => setImportanceFilter("ALL")}
           className={`px-3 py-1 text-xs font-mono font-bold border transition-all ${
@@ -335,9 +362,9 @@ export default function RiskClusterDashboard() {
                   
                   <div className="flex items-center gap-2 text-[10px] tracking-normal shrink-0">
                     <span className="bg-[#142E88] text-white px-2 py-0.5 font-sans font-bold rounded-xs">
-                      PROJECT: {selectedItem.projectName || selectedItem.projectId || "UNKNOWN"}
+                      PROJECT: {selectedItem.projectName}
                     </span>
-                    <span className="text-slate-400">ID Key: {selectedItem.id.slice(0, 8).toUpperCase()}</span>
+                    <span className="text-slate-400">RAID ID: {selectedItem.raidNumber || selectedItem.id}</span>
                   </div>
                 </CardTitle>
               </CardHeader>
@@ -387,9 +414,13 @@ export default function RiskClusterDashboard() {
                         const data = payload[0].payload;
                         return (
                           <div className="bg-white border border-slate-200 p-2 text-xs font-mono shadow-lg text-slate-800">
-                            <p className="font-bold text-[#142E88]">{data.title}</p>
-                            <p>Status: {data.roamCategory || "New / Unassigned"}</p>
-                            <p>Owner: {data.owner || "Unassigned"}</p>
+                            <p className="font-bold text-[#142E88]">{data.raidNumber || data.id}</p>
+                            <p>Title: {data.title}</p>
+                            <p>RAIDQ Type: {data.classification || "Risk"}</p>
+                            <p>Ownership State: {data.ownershipState}</p>
+                            <p>Assigned Owner: {data.assignedOwner || data.owner || "Unassigned"}</p>
+                            <p>Project ID: {data.projectId || "Unassigned"}</p>
+                            <p>Project Name: {data.projectName}</p>
                           </div>
                         );
                       }
@@ -426,7 +457,7 @@ export default function RiskClusterDashboard() {
               <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
                 <CardTitle className="text-xs font-bold uppercase tracking-wider text-[#142E88] flex justify-between items-center font-mono">
                   <span>Triage Management Console: {selectedItem.title}</span>
-                  <span className="text-[10px] text-slate-400">ID Key: {selectedItem.id.slice(0, 8).toUpperCase()}</span>
+                  <span className="text-[10px] text-slate-400">RAID ID: {selectedItem.raidNumber || selectedItem.id}</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-6 space-y-6 text-xs font-mono">
@@ -449,11 +480,11 @@ export default function RiskClusterDashboard() {
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Probability</span>
                     <select
-                      value={selectedItem.probability !== undefined ? Number(selectedItem.probability) : 0}
+                      value={normalizeRaidProbability(selectedItem.probability)}
                       onChange={(e) => handleUpdateParam("probability", Number(e.target.value))}
                       className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
-                      {[0, 1, 2, 3, 4].map(num => (
+                      {[1, 2, 3, 4].map(num => (
                         <option key={num} value={num}>{num} / 4</option>
                       ))}
                     </select>
@@ -476,8 +507,8 @@ export default function RiskClusterDashboard() {
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Assigned Owner</span>
                     <select
-                      value={selectedItem.owner || "Unassigned"}
-                      onChange={(e) => handleUpdateParam("owner", e.target.value)}
+                      value={selectedItem.assignedOwner || selectedItem.owner || "Unassigned"}
+                      onChange={(e) => handleUpdateParam("assignedOwner", e.target.value)}
                       className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none font-bold text-[#142E88]"
                     >
                       {["Unassigned", "ITSD PM", "PMCM", "Others"].map(own => (
@@ -489,11 +520,11 @@ export default function RiskClusterDashboard() {
                   <div className="space-y-1">
                     <span className="text-slate-400 block text-[9px] uppercase font-bold">ROAM Category</span>
                     <select
-                      value={selectedItem.roamCategory || "New / Unassigned"}
+                      value={selectedItem.ownershipState}
                       onChange={(e) => handleUpdateParam("roamCategory", e.target.value)}
                       className="w-full bg-white border border-slate-300 h-8 px-1 text-xs font-mono rounded-none focus:outline-none"
                     >
-                      {["New / Unassigned", "Owned", "Mitigated", "Accepted", "Resolved"].map(cat => (
+                      {Object.keys(RAID_OWNERSHIP_COLORS).map(cat => (
                         <option key={cat} value={cat}>{cat}</option>
                       ))}
                     </select>
@@ -595,16 +626,16 @@ export default function RiskClusterDashboard() {
 
                 {/* 🆕 INJECTED: PROJECT DISPLAY IDENTIFIER BADGE */}
                 <div className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-xs font-sans font-semibold self-start tracking-tight border border-slate-200/60">
-                  📁 {item.projectName || item.projectId || "Unassigned Project"}
+                  📁 {item.projectName}
                 </div>
 
                 <div className="flex justify-between items-center text-[10px] text-slate-400 pt-0.5">
-                  <span>State: <strong className="text-slate-600">{item.roamCategory || "Unassigned"}</strong></span>
+                  <span>{item.raidNumber || item.id} · State: <strong className="text-slate-600">{item.ownershipState}</strong></span>
                   <span>Impact: <strong className="text-slate-600">{item.importance || "N/A"}</strong></span>
                 </div>
-                {item.owner && (
+                {(item.assignedOwner || item.owner) && (
                   <div className="text-[9px] bg-blue-900 text-white px-1.5 py-0.5 rounded-xs self-start font-black">
-                    Owner: {item.owner}
+                    Owner: {item.assignedOwner || item.owner}
                   </div>
                 )}
               </div>

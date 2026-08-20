@@ -93,6 +93,9 @@ export interface RollupState {
 
 export interface RAIDItem {
   id: string;
+  raidNumber?: string;
+  raidSequence?: number;
+  numberingVersion?: number;
   projectId?: string;
   project?: string;
   projectName?: string;
@@ -123,6 +126,7 @@ export interface RAIDItem {
   detectionCount?: number;
   auditTrail?: Array<Record<string, unknown>>;
   mergedIntoRaidId?: string;
+  mergedIntoRaidNumber?: string;
   mergeStatus?: "CANONICAL" | "MERGED";
   mergedAt?: string;
 }

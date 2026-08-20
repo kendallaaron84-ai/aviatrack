@@ -1,7 +1,7 @@
 // File: src/app/dashboard/workbench/raid/page.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot } from "firebase/firestore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,9 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { ShieldAlert, Filter } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { createProjectNameMap, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 export default function RaidMatrixDashboard() {
   const [raidItems, setRaidItems] = useState<any[]>([]);
+  const [projectNames, setProjectNames] = useState<Map<string, string>>(new Map());
   const [activeTab, setActiveTab] = useState<string>("ALL");
   const [selectedProject, setSelectedProject] = useState<string>("ALL"); // 🆕 Project filter state
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -25,15 +27,28 @@ export default function RaidMatrixDashboard() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "admin_projects"), snapshot => {
+      setProjectNames(createProjectNameMap(snapshot.docs.map(document => ({ id: document.id, ...document.data() }))));
+    }, error => console.error("Firestore admin_projects listener error:", error));
+    return () => unsub();
+  }, []);
+
+  const resolvedItems = useMemo(() => raidItems.map(item => ({
+    ...item,
+    projectName: resolveProjectName(item.projectId, projectNames, item.projectName),
+    ownershipState: resolveRaidOwnershipState(item),
+  })), [raidItems, projectNames]);
+
   // 🆕 Dynamically aggregate unique projects for the filter dropdown
   const uniqueProjects = Array.from(
-    new Set(raidItems.map((item) => item.projectName || item.projectId).filter(Boolean))
+    new Set(resolvedItems.map((item) => item.projectId).filter(Boolean))
   );
 
   // Filter items based on BOTH classification tab and project selection
-  const filteredItems = raidItems.filter((item) => {
-    const matchesTab = activeTab === "ALL" || item.classification === activeTab;
-    const matchesProject = selectedProject === "ALL" || (item.projectName || item.projectId) === selectedProject;
+  const filteredItems = resolvedItems.filter((item) => {
+    const matchesTab = activeTab === "ALL" || String(item.classification || "").toUpperCase() === activeTab;
+    const matchesProject = selectedProject === "ALL" || item.projectId === selectedProject;
     return matchesTab && matchesProject;
   });
 
@@ -64,9 +79,9 @@ export default function RaidMatrixDashboard() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All Portfolio Projects</SelectItem>
-              {uniqueProjects.map((projName: any) => (
-                <SelectItem key={projName} value={projName}>
-                  {projName}
+              {uniqueProjects.map((projectId: any) => (
+                <SelectItem key={projectId} value={projectId}>
+                  {resolveProjectName(projectId, projectNames)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -120,9 +135,9 @@ export default function RaidMatrixDashboard() {
                       {/* 🆕 INJECTED PROJECT DISPLAY NAME BADGE */}
                       <div className="flex items-center gap-1.5">
                         <Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100 border border-slate-200 text-[9px] px-1.5 py-0 font-mono tracking-tight shrink-0 rounded-xs">
-                          📁 {item.projectName || item.projectId || "Unassigned Project"}
+                          📁 {item.projectName}
                         </Badge>
-                        <span className="text-[10px] text-slate-400 font-mono">#{item.id.slice(0,5)}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">RAID ID: {item.raidNumber || item.id}</span>
                       </div>
                     </div>
                   </td>
@@ -136,7 +151,7 @@ export default function RaidMatrixDashboard() {
                   {/* Rest of your existing table cells continue completely unmodified... */}
                   <td className="p-3 font-mono">{item.probability}</td>
                   <td className="p-3 font-mono">{item.impact}</td>
-                  <td className="p-3">{item.status}</td>
+                  <td className="p-3">{item.ownershipState}</td>
                   <td className="p-3">
                     <Input 
                       defaultValue={item.dispositionNotes || ""}

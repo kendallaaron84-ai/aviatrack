@@ -16,16 +16,11 @@ import { ActiveThreatRiskRegister } from "@/components/dashboard/ActiveThreatRis
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 import { extractReportingPeriodEnd, normalizeDate, varianceDays } from "@/lib/date-utils";
-import { buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
+import { addChronologicalTimestamps, buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
+import { createProjectNameMap, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Definitive Risk Status Colors System
-const STATUS_COLORS: Record<string, string> = {
-  "New / Unassigned": "#EF4444", // Red 🔴
-  "Owned": "#1A2D83",            // Dark Blue 🔮
-  "Mitigated": "#883AE1",        // Purple 🟣
-  "Accepted": "#3B82F6",         // Light Blue 🔵
-  "Resolved": "#10B981"          // Green 🟢
-};
+const STATUS_COLORS: Record<string, string> = RAID_OWNERSHIP_COLORS;
 
 const TABLE_STATUS_FILTERS = ["ALL", "In Progress", "Planned", "Complete", "Active Block", "Monitoring"] as const;
 type TableStatusFilter = typeof TABLE_STATUS_FILTERS[number];
@@ -42,6 +37,12 @@ const getEvmColorClass = (val: any) => {
 };
 
 const formatEvmMetric = (value: unknown) => typeof value === "number" ? value.toFixed(2) : String(value || "N/A");
+const formatChartDate = (value: unknown) => {
+  const date = new Date(Number(value));
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : "N/A";
+};
 
 export default function AviationExecutiveControlRoom() {
   const { toast } = useToast();
@@ -65,6 +66,7 @@ export default function AviationExecutiveControlRoom() {
   const [rollups, setRollups] = useState<RollupState[]>([]);
   const [workbenchStates, setWorkbenchStates] = useState<RollupState[]>([]);
   const [raidItems, setRaidItems] = useState<RAIDItem[]>([]);
+  const projectNames = useMemo(() => createProjectNameMap(allProjects), [allProjects]);
   
   // 📆 ENHANCEMENT 1: CALENDAR WINDOW INITIALIZATION ENGINE
   const [calendarBounds, setCalendarBounds] = useState(() => {
@@ -343,10 +345,10 @@ export default function AviationExecutiveControlRoom() {
       });
     });
 
-    return periodDates.map(targetDate => {
+    return addChronologicalTimestamps(periodDates.map(targetDate => {
       const point = aggregate.get(targetDate)!;
       return { targetDate, Planned: point.Planned, Actual: point.hasActual ? point.Actual : null, Earned: point.hasEarned ? point.Earned : null };
-    });
+    }));
   }, [globalReports, activeProjectIds, filteredRollups]);
 
   // 🟢 6. DYNAMIC ACTIVE THREAT FILTERING (RAID MATRIX COUPLING)
@@ -360,22 +362,25 @@ export default function AviationExecutiveControlRoom() {
       if (isResolved) return false;
 
       // Ensure classification or type is explicitly "Risk"
-      const isRisk = item.roamCategory === "Risk" || item.classification === "Risk";
+      const isRisk = item.classification === "Risk" || (!item.classification && item.roamCategory === "Risk");
       if (!isRisk) return false;
 
       return true;
     });
 
     return list.map(r => ({
-      id: r.id?.startsWith("RSK-") ? r.id : `RSK-${r.id?.slice(0, 4) || "UNK"}`,
+      id: r.id,
+      raidNumber: r.raidNumber,
       project: r.projectId,
+      projectId: r.projectId,
+      projectName: resolveProjectName(r.projectId, projectNames, r.projectName),
       threat: r.description || r.title || "Unspecified Threat",
       impact: r.importance || r.impactLevel || "High",
       spec: r.classification || r.roamCategory || "Risk",
       status: r.status || "New / Unassigned",
-      roamCategory: r.roamCategory || r.status || "New / Unassigned"
+      roamCategory: resolveRaidOwnershipState(r as unknown as Record<string, unknown>)
     }));
-  }, [raidItems, activeProjectIds]); 
+  }, [raidItems, activeProjectIds, projectNames]);
 
   // Pagination Logic 
   const totalPages = Math.max(1, Math.ceil(filteredGlobalReports.length / itemsPerPage));
@@ -616,7 +621,11 @@ export default function AviationExecutiveControlRoom() {
               <LineChart data={dynamicSCurveData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis 
-                  dataKey="targetDate" 
+                  dataKey="timestamp"
+                  type="number"
+                  scale="time"
+                  domain={["dataMin", "dataMax"]}
+                  tickFormatter={formatChartDate}
                   stroke="#334155" // Darkened to slate-700 for clear line resolution
                   style={{ 
                     fontSize: '13px', // Increased size so the boss can read the years easily
@@ -625,7 +634,7 @@ export default function AviationExecutiveControlRoom() {
                   }} 
                 />
                 <YAxis stroke="#94a3b8" style={{ fontSize: '11px', fontFamily: 'monospace' }} tickFormatter={(val) => `$${(val / 1000000).toFixed(1)}M`} />
-                <Tooltip formatter={(value: any) => [value === null ? "N/A" : `$${value.toLocaleString(undefined, {maximumFractionDigits: 0})}`, '']} />
+                <Tooltip labelFormatter={formatChartDate} formatter={(value: any) => [value === null ? "N/A" : "$" + value.toLocaleString(undefined, {maximumFractionDigits: 0}), ""]} />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Line type="monotone" dataKey="Planned" stroke="#142E88" strokeWidth={3} dot={{ r: 4 }} />
                 <Line type="monotone" dataKey="Actual" stroke="#1EA7F4" strokeWidth={3} dot={{ r: 4 }} />
