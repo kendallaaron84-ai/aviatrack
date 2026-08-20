@@ -128,6 +128,11 @@ service cloud.firestore {
       }
     }
 
+    // Collection-group access used by the signed-in dashboard notification listener.
+    match /{documentPath=**}/portfolio_questions/{questionId} {
+      allow read: if isSignedIn();
+    }
+
     // Fallback Catcher. The top-level collection condition is required because
     // Firestore ORs all matching allow expressions; an explicit false rule alone
     // cannot override this recursive authenticated-user fallback.
