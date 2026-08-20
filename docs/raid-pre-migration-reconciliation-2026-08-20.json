@@ -1,0 +1,142 @@
+{
+  "capturedAt": "2026-08-20T18:08:53.990Z",
+  "productionProject": "aviatrack-prod",
+  "totalRecordCount": 52,
+  "activeRecordCount": 52,
+  "candidateGroupCount": 11,
+  "candidates": [
+    {
+      "canonicalId": "0DmkNRer5DE6vH9QDHAA",
+      "duplicateId": "ZIHoiz6HWsMfrafvTmoP",
+      "projectId": "33-03349-15",
+      "reason": "normalized title and description match",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "43cbed6e70a87ebee303837277ad9e26139f641626b7b3d7f6941318d585cbee"
+    },
+    {
+      "canonicalId": "d0qGrb65weoZtzYZJlzM",
+      "duplicateId": "6FWSzhLRyXRDz7549NW9",
+      "projectId": "33-03349-15",
+      "reason": "high-confidence token similarity",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "36a398d505d3f55abdebb778b2545f545e51377d8993bc356fd0f7a4b3e8fc90"
+    },
+    {
+      "canonicalId": "cDE3MeEgdeidnLlpAo5j",
+      "duplicateId": "D4tEgESXD3MJl0xwLmXg",
+      "projectId": "33-03349-15",
+      "reason": "normalized title and description match",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "ce1b55d88fd06deec7995b1a7e5dcebedbedd3dd351faa4d4dfa0573a7b7a4d2"
+    },
+    {
+      "canonicalId": "icu0mC6uZEJLCRZOwEUt",
+      "duplicateId": "3G4P33tzXm1Du2JcPfWO",
+      "projectId": "33-03349-18",
+      "reason": "high-confidence token similarity",
+      "confidence": 0.9811320754716981,
+      "canonicalProtectedFieldsHash": "0ffe5dcf7d5bb3152ac0f308f5f90e043b7cf700b162075a03b95f82e06f1717"
+    },
+    {
+      "canonicalId": "b0ct5QVfX7zE4p08lnWL",
+      "duplicateId": "CWd5hgOhmWBKYzmunwaC",
+      "projectId": "33-03349-18",
+      "reason": "high-confidence token similarity",
+      "confidence": 0.9523809523809523,
+      "canonicalProtectedFieldsHash": "e9570fd2ed4992866b7723cc107a6207de3f811e7dee26bc6caa80279276c64b"
+    },
+    {
+      "canonicalId": "hJ2EmUlo9o2tlUQj0keQ",
+      "duplicateId": "ZnDep6xGUMZpwP8RUQb5",
+      "projectId": "33-03349-18",
+      "reason": "high-confidence token similarity",
+      "confidence": 0.967741935483871,
+      "canonicalProtectedFieldsHash": "9e895c0c424538960437c71026d9116e7e3792806d62eb14e5426429c62502dd"
+    },
+    {
+      "canonicalId": "CEDXxo1LUhJ8J0PYwuUa",
+      "duplicateId": "VwxORH8zSAFrvECW885S",
+      "projectId": "33-03349",
+      "reason": "high-confidence token similarity",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "39eb08966cad5aaf2d9cc48893a2b803513218e3986cc9950eb94228569bed8f"
+    },
+    {
+      "canonicalId": "hdXr0nrONJ8mERq9I0us",
+      "duplicateId": "CEDXxo1LUhJ8J0PYwuUa",
+      "projectId": "33-03349",
+      "reason": "normalized title and description match",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "1c2363df1f27bf01bab64eef881769207190c2edb65919ef0f41b9f64ecb15e5"
+    },
+    {
+      "canonicalId": "Z0NIBt7l0Ux0HjwSgs6I",
+      "duplicateId": "L13QyXIOqnkhdIOJNM3L",
+      "projectId": "33-03349-09",
+      "reason": "high-confidence token similarity",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "dd6a8688b23593b62feb31142e2b9ddb94703f4694967b9d9ec56989b18b6eb6"
+    },
+    {
+      "canonicalId": "xknoEid1PEIe4uFZSELE",
+      "duplicateId": "w7W7TeuiPCVoYuWbFXHd",
+      "projectId": "33-03349-09",
+      "reason": "high-confidence token similarity",
+      "confidence": 1,
+      "canonicalProtectedFieldsHash": "ebe0fafa7da704d73c1cc26f59e96847f26ba72caa520f0961359bef150ae0bd"
+    },
+    {
+      "canonicalId": "MAD101s2rNkGUMoh6FZd",
+      "duplicateId": "P2l9MJWaydFaeImOCZXW",
+      "projectId": "33-03349-19",
+      "reason": "high-confidence token similarity",
+      "confidence": 0.9523809523809523,
+      "canonicalProtectedFieldsHash": "466d9276a7e56a1c2f0cb4e7f9453936926c7c0b0bc42f55137f48100010972f"
+    }
+  ],
+  "ambiguousPairCount": 7,
+  "ambiguous": [
+    {
+      "leftId": "beeCoh8UJb0iVN09nyGn",
+      "rightId": "vVJ07ta1QFnG0QjyBcmT",
+      "projectId": "33-03349-15",
+      "similarity": 0.9285714285714286
+    },
+    {
+      "leftId": "ISzlopQe2TnECUc8qKa8",
+      "rightId": "q1DS1RKw0k2T93wWnmku",
+      "projectId": "33-03349-18",
+      "similarity": 0.92
+    },
+    {
+      "leftId": "3QtsG3RBxU0JNJH1jeDe",
+      "rightId": "nsKIXeKLGTy8CqjTA9GG",
+      "projectId": "33-03349-21",
+      "similarity": 0.9473684210526315
+    },
+    {
+      "leftId": "bGdystvJBSLKAtixZ8nh",
+      "rightId": "tOrZ0rqUvxjYYcuKwPmv",
+      "projectId": "33-03349-21",
+      "similarity": 0.88
+    },
+    {
+      "leftId": "IVrpkxSccfl9w2t3kVVL",
+      "rightId": "YUOmSkwKSofp4qdXsZPR",
+      "projectId": "33-03349",
+      "similarity": 0.7
+    },
+    {
+      "leftId": "MAD101s2rNkGUMoh6FZd",
+      "rightId": "NSnrCVWXWSuR8Hisa2jo",
+      "projectId": "33-03349-19",
+      "similarity": 0.782608695652174
+    },
+    {
+      "leftId": "R5mt98to0FcREKJ1rsnk",
+      "rightId": "me0Xljnj09Sb80t3muk7",
+      "projectId": "33-03349-13",
+      "similarity": 0.9117647058823529
+    }
+  ]
+}
