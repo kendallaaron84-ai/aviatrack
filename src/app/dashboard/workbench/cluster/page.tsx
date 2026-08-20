@@ -38,6 +38,9 @@ export default function RiskClusterDashboard() {
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [commentText, setCommentText] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<any>(null);
+  const [isMigrationRunning, setIsMigrationRunning] = useState(false);
+  const [showMigrationControls, setShowMigrationControls] = useState(false);
 
   // Filter Configuration States
   const [importanceFilter, setImportanceFilter] = useState<string>("ALL");
@@ -53,6 +56,10 @@ export default function RiskClusterDashboard() {
       setRaidqItems(items);
     }, (error) => console.error("Firestore raid_matrix listener error:", error));
     return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    setShowMigrationControls(new URLSearchParams(window.location.search).get("raidNumberingMigration") === "1");
   }, []);
 
   useEffect(() => {
@@ -140,6 +147,26 @@ export default function RiskClusterDashboard() {
       alert("Failed to safely establish background pipeline tunnel.");
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleRaidNumberingMigration = async (mode: "dry-run" | "apply") => {
+    setIsMigrationRunning(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
+      const response = await fetch("/api/raid-numbering", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "RAID numbering migration failed.");
+      setMigrationResult(data);
+    } catch (error: any) {
+      setMigrationResult({ error: error.message });
+    } finally {
+      setIsMigrationRunning(false);
     }
   };
 
@@ -314,6 +341,21 @@ export default function RiskClusterDashboard() {
           )}
         </div>
       </div>
+
+      {showMigrationControls && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardHeader>
+            <CardTitle className="text-sm">One-Time RAID Numbering Migration</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <Button disabled={isMigrationRunning} onClick={() => handleRaidNumberingMigration("dry-run")}>Run Dry-Run</Button>
+              <Button disabled={isMigrationRunning || migrationResult?.mode !== "dry-run" || migrationResult?.duplicateRaidNumberCount !== 0} variant="destructive" onClick={() => handleRaidNumberingMigration("apply")}>Apply Verified Mapping</Button>
+            </div>
+            {migrationResult && <pre className="max-h-80 overflow-auto border bg-slate-950 p-3 text-[10px] text-white">{JSON.stringify(migrationResult, null, 2)}</pre>}
+          </CardContent>
+        </Card>
+      )}
 
       {/* DYNAMIC FILTER ROW ACCUMULATOR CONTROL HOOKS */}
       <div className="flex flex-wrap items-center gap-2 bg-white p-3 border border-slate-200 rounded-sm">
