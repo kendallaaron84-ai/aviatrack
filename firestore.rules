@@ -1,25 +1,139 @@
-rules_version='2'
+rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Server-owned coordination and allocation records. Admin SDK routes bypass
-    // these rules; browser clients must never read or mutate the counters.
+
+    // Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Server-owned coordination records.
+    // Firebase Admin SDK bypasses Firestore Security Rules.
+    // Browser/client applications must never modify these counters.
     match /counters/{counterId} {
       allow read, write: if false;
     }
 
-    match /{collection}/{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if collection != "counters"
-        && request.time < timestamp.date(2026, 3, 19);
+    // 1. Field Observations & Executive Sub-Chats
+    match /field_observations/{observationId} {
+      allow read, write: if isSignedIn();
+
+      match /sub_observations/{subId} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /pm_comments/{commentId} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /portfolio_questions/{questionId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 2. Legacy / Core Project Envelopes
+    match /projects/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /financials/{financialId} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /dependencies/{dependencyId} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /changeOrders/{changeOrderId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 3. Admin Portal Selection Dictionaries
+    match /admin_projects/{projectId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /admin_personnel/{personId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /admin_sectors/{sectorId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /admin_settings/{settingId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /airfield_map_layers/{layerId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 4. Workbench Baseline & Schedule Trackers
+    match /project_baselines/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /weekly_status/{statusId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 5. Status Reports & Narrative Journals
+    match /project_status_reports/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /biweekly_reports/{reportId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    match /project_journals/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /entries/{entryId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 6. SAP Financial Ledger Trackers
+    match /financials/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /ledger/{ledgerId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 7. Master Reference Tables
+    match /master_work_packages/{document} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 8. Project Execution Workbench States
+    match /project_workbench_states/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /historical_snapshots/{snapshotId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // 9. Project Manager Correspondence Ledger
+    match /project_correspondence/{projectId} {
+      allow read, write: if isSignedIn();
+
+      match /logs/{logId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // Fallback Catcher. The top-level collection condition is required because
+    // Firestore ORs all matching allow expressions; an explicit false rule alone
+    // cannot override this recursive authenticated-user fallback.
+    match /{topLevelCollection}/{document=**} {
+      allow read, write: if isSignedIn()
+        && topLevelCollection != "counters";
     }
   }
 }
