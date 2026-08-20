@@ -115,6 +115,7 @@ export default function RiskClusterDashboard() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "RAID ingestion failed.");
       alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0} items.`);
     } catch (err) {
       console.error(err);

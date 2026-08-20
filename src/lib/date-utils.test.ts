@@ -46,3 +46,14 @@ test("resolves cutoff and leaves future AC/EV null", () => {
     { periodDate: "2027-06-30", Planned: 100, Actual: null, Earned: null },
   ]);
 });
+
+test("does not carry AC/EV into a date without an exact snapshot", () => {
+  const records = [{ projectId: "P1", periodEnd: "2026-06-30", evmMetrics: { actualCost: 20, earnedValue: 18 } }];
+  assert.deepEqual(buildSparseEvmSeries([
+    { periodDate: "2026-06-30", plannedValue: 25 },
+    { periodDate: "2026-07-31", plannedValue: 30 },
+  ], records, new Date("2026-07-31T00:00:00Z")), [
+    { periodDate: "2026-06-30", Planned: 25, Actual: 20, Earned: 18 },
+    { periodDate: "2026-07-31", Planned: 30, Actual: null, Earned: null },
+  ]);
+});

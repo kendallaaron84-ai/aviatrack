@@ -3,8 +3,10 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import type { DocumentReference, Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "@/lib/firebase-admin";
-import { CLOSED_RAID_STATUSES, deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, riskSimilarity } from "@/lib/risk-utils";
+import { CLOSED_RAID_STATUSES, deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, raidProjectLockId, riskSimilarity } from "@/lib/risk-utils";
 
 const requestSchema = z.object({ force: z.boolean().optional() }).strict();
 const analyzedItemSchema = z.object({ title: z.string(), description: z.string(), classification: z.enum(["Risk", "Assumption", "Issue", "Dependency"]), importance: z.enum(["Critical", "Mandatory", "High", "Medium", "Low"]), probability: z.coerce.number().int().min(1).max(4) });
@@ -13,6 +15,41 @@ const relationshipSchema = z.object({ relationship: z.enum(["NEW_RISK", "RELATED
 
 type SourceReference = { sourceKey: string; sourceType: "Project Journal" | "Field Observation"; sourceDocumentId: string; parentDocumentId?: string; projectId: string; observedAt?: string; text: string };
 const cleanJson = (value: string) => value.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+
+const LEASE_DURATION_MS = 5 * 60 * 1000;
+const LEASE_RETRY_COUNT = 40;
+const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+class ProjectIngestionBusyError extends Error {
+  constructor(projectId: string) {
+    super(`RAID ingestion is already processing project ${projectId}. Retry the request.`);
+    this.name = "ProjectIngestionBusyError";
+  }
+}
+
+async function acquireProjectLease(db: Firestore, projectId: string): Promise<{ ref: DocumentReference; ownerToken: string }> {
+  const ref = db.collection("counters").doc(raidProjectLockId(projectId));
+  const ownerToken = randomUUID();
+  for (let attempt = 0; attempt < LEASE_RETRY_COUNT; attempt++) {
+    const acquired = await db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      const now = Date.now();
+      if (snapshot.exists && Number(snapshot.data()?.leaseExpiresAt || 0) > now) return false;
+      transaction.set(ref, { kind: "raid_ingestion_lock", projectId, ownerToken, leaseExpiresAt: now + LEASE_DURATION_MS, updatedAt: new Date(now).toISOString() });
+      return true;
+    });
+    if (acquired) return { ref, ownerToken };
+    await wait(250);
+  }
+  throw new ProjectIngestionBusyError(projectId);
+}
+
+async function releaseProjectLease(db: Firestore, lease: { ref: DocumentReference; ownerToken: string }) {
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(lease.ref);
+    if (snapshot.exists && snapshot.data()?.ownerToken === lease.ownerToken) transaction.delete(lease.ref);
+  });
+}
 
 export async function POST(request: Request) {
   const authorization = request.headers.get("authorization");
@@ -65,6 +102,8 @@ export async function POST(request: Request) {
     for (const result of analyzed.items) {
       const source = sources[result.inputIndex];
       if (!source) continue;
+      const lease = await acquireProjectLease(db, source.projectId);
+      try {
       const sourceRef = db.collection("raid_matrix").doc(deterministicRaidId(source.sourceKey));
       const candidatesSnap = await db.collection("raid_matrix").where("projectId", "==", source.projectId).get();
       const activeCandidates = candidatesSnap.docs.filter(doc => {
@@ -84,32 +123,37 @@ export async function POST(request: Request) {
         if (relationship.relationship !== "NEW_RISK" && relationship.confidence >= 0.9 && relationship.existingRaidId) target = activeCandidates.find(doc => doc.id === relationship.existingRaidId);
       }
 
-      await db.runTransaction(async transaction => {
+      const outcome = await db.runTransaction(async transaction => {
         const existingSource = await transaction.get(sourceRef);
-        if (existingSource.exists) { skippedCount++; return; }
+        if (existingSource.exists) return "skipped" as const;
         const now = new Date().toISOString();
         const evidence = { sourceKey: source.sourceKey, sourceType: source.sourceType, sourceDocumentId: source.sourceDocumentId, ...(source.parentDocumentId ? { parentDocumentId: source.parentDocumentId } : {}), ...(source.observedAt ? { observedAt: source.observedAt } : {}), addedAt: now };
 
         if (target) {
           const targetSnap = await transaction.get(target.ref);
-          if (!targetSnap.exists) return;
+          if (!targetSnap.exists) throw new Error("Selected canonical RAID record no longer exists; retry ingestion.");
           const data = targetSnap.data()!;
           transaction.update(target.ref, { sourceKey: data.sourceKey || source.sourceKey, sourceKeys: [...new Set([...(data.sourceKeys || (data.sourceKey ? [data.sourceKey] : [])), source.sourceKey])], sourceReferences: [...(data.sourceReferences || []), evidence], lastDetectedAt: now, detectionCount: Number(data.detectionCount || 1) + 1, auditTrail: [...(data.auditTrail || []), { action: "EVIDENCE_MERGED", sourceKey: source.sourceKey, at: now }], mergeStatus: "CANONICAL" });
           transaction.set(sourceRef, { projectId: source.projectId, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], mergeStatus: "MERGED", mergedIntoRaidId: target.id, mergedAt: now, status: "Merged", createdAt: now });
-          mergedCount++;
-          return;
+          return "merged" as const;
         }
 
         const assignedOwner = ["Dependency", "Issue"].includes(result.analysis.classification) ? "IT Consultant" : "ORAT Team";
         const textPool = [result.analysis.title, result.analysis.description, result.analysis.classification, source.projectId].join(" ").toLowerCase();
         transaction.set(sourceRef, { ...result.analysis, projectId: source.projectId, sourceReferenceId: source.sourceDocumentId, sourceType: source.sourceType, sourceKey: source.sourceKey, sourceKeys: [source.sourceKey], sourceReferences: [evidence], roamCategory: result.analysis.classification, impactLevel: result.analysis.importance, status: "Identified", assignedOwner, isItOwned: assignedOwner === "IT Consultant", dispositionNotes: "", historicalComments: [], auditTrail: [{ action: "RISK_CREATED", sourceKey: source.sourceKey, at: now }], detectionCount: 1, lastDetectedAt: now, mergeStatus: "CANONICAL", analyzedAt: now, createdAt: now, search_tags: [...new Set(textPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(word => word.length > 1))] });
-        createdCount++;
+        return "created" as const;
       });
+      if (outcome === "created") createdCount++;
+      else if (outcome === "merged") mergedCount++;
+      else skippedCount++;
+      } finally {
+        await releaseProjectLease(db, lease);
+      }
     }
 
     return NextResponse.json({ success: true, processedCount: analyzed.items.length, createdCount, mergedCount, skippedCount });
   } catch (error: any) {
     console.error("RAID Pipeline Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error.message }, { status: error instanceof ProjectIngestionBusyError ? 409 : 500 });
   }
 }

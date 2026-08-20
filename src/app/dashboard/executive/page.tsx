@@ -16,7 +16,7 @@ import { ActiveThreatRiskRegister } from "@/components/dashboard/ActiveThreatRis
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 import { extractReportingPeriodEnd, normalizeDate, varianceDays } from "@/lib/date-utils";
-import { calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
+import { buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
 
 // Definitive Risk Status Colors System
 const STATUS_COLORS: Record<string, string> = {
@@ -304,32 +304,48 @@ export default function AviationExecutiveControlRoom() {
       if (completion) dates.add(completion.toISOString().slice(0, 10));
     });
 
-    return [...dates].sort().map(periodDate => {
-      const pointDate = normalizeDate(periodDate)!;
-      let planned = 0;
-      let actual = 0;
-      let earned = 0;
-      let hasActual = false;
+    const periodDates = [...dates].sort();
+    const aggregate = new Map(periodDates.map(periodDate => [periodDate, { Planned: 0, Actual: 0, Earned: 0, hasActual: false, hasEarned: false }]));
 
-      filteredRollups.forEach((rollup: any) => {
-        const projectReports = datedReports.filter(report => report.projectId === rollup.projectId && report.date <= pointDate).sort((a, b) => b.date.getTime() - a.date.getTime());
-        const cutoff = normalizeDate(rollup.reportingCutoff);
-        const completion = (rollup.milestones || []).map((m: any) => normalizeDate(m.baselineEnd || m.baselineEndDate)).filter((date: Date | null): date is Date => date !== null).sort((a: Date, b: Date) => b.getTime() - a.getTime())[0];
-        const latest = projectReports[0]?.evmMetrics;
-        const current = cutoff && cutoff <= pointDate ? rollup.evmMetrics : undefined;
-        const values = current || latest;
-
-        if (completion && pointDate >= completion) planned += rollup.budget || 0;
-        else planned += values?.plannedValue || 0;
-
-        if (cutoff && pointDate <= cutoff && values) {
-          actual += values.actualCost || 0;
-          earned += values.earnedValue || 0;
-          hasActual = true;
-        }
+    filteredRollups.forEach((rollup: any) => {
+      const projectReports = datedReports.filter(report => report.projectId === rollup.projectId);
+      const cutoff = normalizeDate(rollup.reportingCutoff) || resolveReportingCutoff(projectReports, rollup.lastSavedAt);
+      const completion = (rollup.milestones || []).map((m: any) => normalizeDate(m.baselineEnd || m.baselineEndDate)).filter((date: Date | null): date is Date => date !== null).sort((a: Date, b: Date) => b.getTime() - a.getTime())[0];
+      const records = [
+        ...projectReports,
+        ...(rollup.evmMetrics ? [{ projectId: rollup.projectId, periodEnd: cutoff, evmMetrics: rollup.evmMetrics }] : []),
+      ];
+      const plannedPoints = periodDates.map(periodDate => {
+        const pointDate = normalizeDate(periodDate)!;
+        const latestPlannedSnapshot = projectReports
+          .filter(report => report.date <= pointDate)
+          .sort((a, b) => b.date.getTime() - a.date.getTime())[0];
+        return {
+          periodDate,
+          plannedValue: completion && pointDate >= completion
+            ? rollup.budget || 0
+            : latestPlannedSnapshot?.evmMetrics?.plannedValue || 0,
+        };
       });
 
-      return { targetDate: periodDate, Planned: planned, Actual: hasActual ? actual : null, Earned: hasActual ? earned : null };
+      buildSparseEvmSeries(plannedPoints, records, cutoff).forEach(point => {
+        const target = aggregate.get(point.periodDate);
+        if (!target) return;
+        target.Planned += point.Planned;
+        if (point.Actual !== null) {
+          target.Actual += point.Actual;
+          target.hasActual = true;
+        }
+        if (point.Earned !== null) {
+          target.Earned += point.Earned;
+          target.hasEarned = true;
+        }
+      });
+    });
+
+    return periodDates.map(targetDate => {
+      const point = aggregate.get(targetDate)!;
+      return { targetDate, Planned: point.Planned, Actual: point.hasActual ? point.Actual : null, Earned: point.hasEarned ? point.Earned : null };
     });
   }, [globalReports, activeProjectIds, filteredRollups]);
 
