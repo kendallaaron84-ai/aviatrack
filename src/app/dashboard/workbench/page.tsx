@@ -1,7 +1,7 @@
 // File: src/app/dashboard/workbench/page.tsx
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,18 @@ import { db, auth } from "@/lib/firebase";
 import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc, getDocs } from "firebase/firestore";
 import { durationDays, varianceDays } from "@/lib/date-utils";
 import { legacyReportNumber } from "@/lib/field-observation-utils";
+import {
+  WORKBENCH_AUTOSAVE_DELAY_MS,
+  buildWorkbenchSavePayload,
+  emptyWorkbenchReportForm,
+  isLocalWorkbenchDraftNewer,
+  normalizeWorkbenchReportForm,
+  parseLocalWorkbenchDraft,
+  workbenchLocalDraftKey,
+  workbenchStateSignature,
+  type LocalWorkbenchDraft,
+  type WorkbenchDraftState,
+} from "@/lib/workbench-draft";
 
 // STATIC CONSTANTS (Must be outside the component)
 const TRADE_DIVISIONS = [
@@ -74,7 +86,7 @@ export default function ObservationWorkbenchPage() {
 
   // 4. AI & REPORTING STATES
   const [isGenerating, setIsGenerating] = useState(false);
-  const [reportForm, setReportForm] = useState({ periodStart: "", periodEnd: "", lookAhead: "", risks: "", impact: "", resolutionPlan: "", actionItems: "" });
+  const [reportForm, setReportForm] = useState(emptyWorkbenchReportForm);
   const [viewingSnapshot, setViewingSnapshot] = useState<any>(null);
   
   // 🆕 BUG FIX: Independent state for context trade editor to resolve modal collision
@@ -88,15 +100,27 @@ export default function ObservationWorkbenchPage() {
 
   const [initialState, setInitialState] = useState<string>("");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const [hydratedProject, setHydratedProject] = useState("");
+  const [localRecoveryCandidate, setLocalRecoveryCandidate] = useState<LocalWorkbenchDraft | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const latestSignatureRef = useRef("");
+  const selectedProjectRef = useRef(selectedProject);
+  selectedProjectRef.current = selectedProject;
+
+  const currentDraftState = useMemo<WorkbenchDraftState>(() => ({ milestones, dependencies, evm, reportForm }), [milestones, dependencies, evm, reportForm]);
+  const currentDraftSignature = useMemo(() => workbenchStateSignature(currentDraftState), [currentDraftState]);
 
   useEffect(() => {
-    if (!initialState) {
+    if (!initialState || hydratedProject !== selectedProject) {
       setHasUnsavedChanges(false);
       return;
     }
-    const currentState = JSON.stringify({ milestones, dependencies, evm });
-    setHasUnsavedChanges(initialState !== currentState);
-  }, [initialState, milestones, dependencies, evm]);
+    setHasUnsavedChanges(initialState !== currentDraftSignature);
+  }, [initialState, currentDraftSignature, hydratedProject, selectedProject]);
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -166,6 +190,12 @@ export default function ObservationWorkbenchPage() {
   // Fetch Workbench Data when Selected Project Changes
   useEffect(() => {
     if (!selectedProject) return;
+    let cancelled = false;
+    setHydratedProject("");
+    setLocalRecoveryCandidate(null);
+    setSaveStatus("idle");
+    setSaveError("");
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
 
     const fetchBaseline = async () => {
       const docSnap = await getDoc(doc(db, "project_baselines", selectedProject));
@@ -174,24 +204,35 @@ export default function ObservationWorkbenchPage() {
     };
     
     const fetchWorkbenchState = async () => {
-      const stateSnap = await getDoc(doc(db, "project_workbench_states", selectedProject));
-      let initialMilestones = [];
-      let initialDependencies = [];
-      let initialEvm = { plannedValue: 0, earnedValue: 0, actualCost: 0 };
-      if (stateSnap.exists()) {
-        const data = stateSnap.data();
-        initialMilestones = data.milestones || [];
-        initialDependencies = data.dependencies || [];
-        initialEvm = data.evm || { plannedValue: 0, earnedValue: 0, actualCost: 0 };
-      } else {
-        initialMilestones = [{ id: crypto.randomUUID(), type: "Construction", name: "Drywall Complete", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }];
-        initialDependencies = [];
-        initialEvm = { plannedValue: 0, earnedValue: 0, actualCost: 0 };
+      try {
+        const stateSnap = await getDoc(doc(db, "project_workbench_states", selectedProject));
+        const data = stateSnap.exists() ? stateSnap.data() : {};
+        const serverState: WorkbenchDraftState = {
+          milestones: data.milestones || [{ id: crypto.randomUUID(), type: "Construction", name: "Drywall Complete", baselineStart: "", baselineEnd: "", forecastStart: "", forecastEnd: "", status: "Planned", criticalPathStatus: "🟢 On Track", notes: "" }],
+          dependencies: data.dependencies || [],
+          evm: data.evm || { plannedValue: 0, earnedValue: 0, actualCost: 0 },
+          reportForm: normalizeWorkbenchReportForm(data.reportDraft?.form),
+        };
+        const localDraft = parseLocalWorkbenchDraft(localStorage.getItem(workbenchLocalDraftKey(selectedProject)), selectedProject);
+        if (cancelled) return;
+        setMilestones(serverState.milestones);
+        setDependencies(serverState.dependencies);
+        setEvm(serverState.evm);
+        setReportForm(serverState.reportForm);
+        const serverSignature = workbenchStateSignature(serverState);
+        setInitialState(serverSignature);
+        latestSignatureRef.current = serverSignature;
+        const serverSavedAt = data.reportDraft?.lastSavedAt || data.lastSavedAt || null;
+        setLastSavedAt(serverSavedAt);
+        setLocalRecoveryCandidate(localDraft && isLocalWorkbenchDraftNewer(localDraft, serverSavedAt) ? localDraft : null);
+        setSaveStatus(serverSavedAt ? "saved" : "idle");
+        setHydratedProject(selectedProject);
+      } catch (error: any) {
+        if (cancelled) return;
+        console.error("Workbench restore failed:", error);
+        setSaveError(error.message || "Unable to restore the saved Workbench state.");
+        setSaveStatus("error");
       }
-      setMilestones(initialMilestones);
-      setDependencies(initialDependencies);
-      setEvm(initialEvm);
-      setInitialState(JSON.stringify({ milestones: initialMilestones, dependencies: initialDependencies, evm: initialEvm }));
     };
 
     fetchBaseline();
@@ -206,7 +247,13 @@ export default function ObservationWorkbenchPage() {
       setEmailLogs(allLogs.filter((log: any) => log.loggedBy === currentUser));
     }, (error) => console.error("Firestore project correspondence listener error:", error));
 
-    return () => { unsubJournal(); unsubReports(); unsubEmails(); };
+    return () => {
+      cancelled = true;
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      unsubJournal();
+      unsubReports();
+      unsubEmails();
+    };
   }, [selectedProject]);
 
   const costVariance = evm.earnedValue - evm.actualCost;
@@ -233,9 +280,114 @@ export default function ObservationWorkbenchPage() {
     log.sender.toLowerCase().includes(emailSearch.toLowerCase())
   ), [emailLogs, emailSearch]);
 
+  const persistWorkbenchState = useCallback(async (options?: {
+    createSnapshot?: boolean;
+    notify?: boolean;
+    stateOverride?: WorkbenchDraftState;
+  }) => {
+    const projectAtStart = selectedProject;
+    if (!projectAtStart || hydratedProject !== projectAtStart) return false;
+    const stateToSave = options?.stateOverride || currentDraftState;
+    const signatureToSave = workbenchStateSignature(stateToSave);
+    const timestamp = new Date().toISOString();
+    const currentUser = auth.currentUser?.email || "Authenticated Program Manager";
+    const savePayload = buildWorkbenchSavePayload({
+      projectId: projectAtStart,
+      state: stateToSave,
+      savedBy: currentUser,
+      savedAt: timestamp,
+    });
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+
+    const operation = async () => {
+      setIsSavingState(true);
+      setSaveStatus("saving");
+      setSaveError("");
+      try {
+        await setDoc(doc(db, "project_workbench_states", projectAtStart), savePayload, { merge: true });
+        if (options?.createSnapshot) {
+          await addDoc(collection(db, "project_workbench_states", projectAtStart, "historical_snapshots"), { ...savePayload, snapshotTimestamp: timestamp });
+        }
+        if (selectedProjectRef.current === projectAtStart && latestSignatureRef.current === signatureToSave) {
+          setInitialState(signatureToSave);
+          setHasUnsavedChanges(false);
+          setSaveStatus("saved");
+          setLastSavedAt(timestamp);
+          localStorage.removeItem(workbenchLocalDraftKey(projectAtStart));
+        }
+        if (options?.notify) {
+          toast({ title: "Draft Saved", description: `Draft saved at ${new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` });
+        }
+        return true;
+      } catch (error: any) {
+        console.error("Workbench draft save failed:", error);
+        if (selectedProjectRef.current === projectAtStart) {
+          setSaveStatus("error");
+          setSaveError(error.message || "The draft could not be saved. Your local recovery copy is retained.");
+          setHasUnsavedChanges(true);
+        }
+        if (options?.notify) toast({ variant: "destructive", title: "Save Failed", description: "Your draft remains on this device. Use Retry after connectivity is restored." });
+        return false;
+      } finally {
+        if (selectedProjectRef.current === projectAtStart) setIsSavingState(false);
+      }
+    };
+    const queuedSave = saveQueueRef.current.then(operation, operation);
+    saveQueueRef.current = queuedSave.then(() => undefined, () => undefined);
+    return queuedSave;
+  }, [currentDraftState, hydratedProject, selectedProject, toast]);
+
+  useEffect(() => {
+    if (!selectedProject || hydratedProject !== selectedProject || localRecoveryCandidate) return;
+    latestSignatureRef.current = currentDraftSignature;
+    if (!initialState || currentDraftSignature === initialState) return;
+
+    const localDraft: LocalWorkbenchDraft = {
+      version: 1,
+      projectId: selectedProject,
+      savedAt: new Date().toISOString(),
+      state: currentDraftState,
+    };
+    try {
+      localStorage.setItem(workbenchLocalDraftKey(selectedProject), JSON.stringify(localDraft));
+    } catch (error) {
+      console.error("Workbench local recovery save failed:", error);
+    }
+    setSaveStatus("dirty");
+    setHasUnsavedChanges(true);
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => { void persistWorkbenchState(); }, WORKBENCH_AUTOSAVE_DELAY_MS);
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, [currentDraftSignature, currentDraftState, hydratedProject, initialState, localRecoveryCandidate, persistWorkbenchState, selectedProject]);
+
+  const restoreLocalDraft = () => {
+    if (!localRecoveryCandidate || localRecoveryCandidate.projectId !== selectedProject) return;
+    const recovered = localRecoveryCandidate.state;
+    setMilestones(recovered.milestones);
+    setDependencies(recovered.dependencies);
+    setEvm(recovered.evm);
+    setReportForm(recovered.reportForm);
+    latestSignatureRef.current = workbenchStateSignature(recovered);
+    setLocalRecoveryCandidate(null);
+    setSaveStatus("dirty");
+    setHasUnsavedChanges(true);
+  };
+
+  const useServerDraft = () => {
+    if (!selectedProject) return;
+    localStorage.removeItem(workbenchLocalDraftKey(selectedProject));
+    setLocalRecoveryCandidate(null);
+    setSaveStatus(lastSavedAt ? "saved" : "idle");
+  };
+
   const handleAutoGenerateReport = async () => {
     setIsGenerating(true);
     try {
+      latestSignatureRef.current = currentDraftSignature;
+      const saved = await persistWorkbenchState();
+      if (!saved) throw new Error("The current draft could not be saved before generation.");
       const token = await auth.currentUser?.getIdToken();
       if (!token) throw new Error("Authentication required.");
       const response = await fetch('/api/generate-report', {
@@ -245,26 +397,28 @@ export default function ObservationWorkbenchPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          projectId: selectedProject,
           journalEntries: journalLogs,
           reportingPeriod: `${reportForm.periodStart} to ${reportForm.periodEnd}`
         })
       });
 
       const aiData = await response.json();
-      if (aiData.projectSummaries && aiData.projectSummaries.length > 0) {
-        const projectData = aiData.projectSummaries[0]; 
-        setReportForm({
-          ...reportForm,
+      if (!response.ok) throw new Error(aiData.error || "Auto-draft generation failed.");
+      if (aiData.projectSummaries?.length > 0) {
+        const projectData = aiData.projectSummaries[0];
+        setReportForm(current => ({
+          ...current,
           lookAhead: projectData.lookAhead,
           risks: projectData.risks,
           impact: projectData.impact,
           resolutionPlan: projectData.resolutionPlan,
-          actionItems: projectData.actionItems.join('\n')
-        });
+          actionItems: Array.isArray(projectData.actionItems) ? projectData.actionItems.join('\n') : "",
+        }));
         toast({ title: "AI Draft Complete", description: "Report populated from journal logs. Please review." });
-      }
-    } catch (error) {
-      toast({ variant: "destructive", title: "AI Generation Error", description: "Ensure the API route is built." });
+      } else throw new Error("The server returned no structured report draft.");
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "AI Generation Error", description: error.message || "The report draft could not be generated." });
     } finally {
       setIsGenerating(false);
     }
@@ -324,21 +478,8 @@ export default function ObservationWorkbenchPage() {
   };
 
   const handleSaveWorkbenchState = async () => {
-    setIsSavingState(true);
-    try {
-      const currentUser = auth.currentUser?.email || "Kendall Aaron";
-      const timestamp = new Date().toISOString();
-      const processedMilestones = milestones.map(m => ({ ...m, baselineDurationDays: calculateBaselineDuration(m.baselineStart, m.baselineEnd), estimatedDurationDays: calculateEstimatedDuration(m.baselineStart, m.baselineEnd), varianceDays: calculateMilestoneVariance(m.baselineEnd, m.forecastEnd) }));
-      const macroCalculatedHealth = costVariance < 0 || hasCriticalPathBlocker || currentSpiNum < 1 ? "Critical Risk" : "On Track";
-
-      const savePayload = { projectId: selectedProject, milestones: processedMilestones, dependencies, evm, statusHealthIndicator: macroCalculatedHealth, lastSavedBy: currentUser, lastSavedAt: timestamp };
-      await setDoc(doc(db, "project_workbench_states", selectedProject), savePayload);
-      await addDoc(collection(db, "project_workbench_states", selectedProject, "historical_snapshots"), { ...savePayload, snapshotTimestamp: timestamp });
-      setInitialState(JSON.stringify({ milestones, dependencies, evm }));
-      toast({ title: "Workbench Settings Saved" });
-    } catch (err) {
-      toast({ variant: "destructive", title: "Save Error" });
-    } finally { setIsSavingState(false); }
+    latestSignatureRef.current = currentDraftSignature;
+    await persistWorkbenchState({ createSnapshot: true, notify: true });
   };
 
   const handleLockBaseline = async (e: React.FormEvent) => {
@@ -355,6 +496,8 @@ export default function ObservationWorkbenchPage() {
     e.preventDefault();
     setIsSubmitting(true);
     try {
+      latestSignatureRef.current = currentDraftSignature;
+      if (!await persistWorkbenchState()) throw new Error("Save the current draft before committing the report.");
       const currentUser = auth.currentUser?.email || "Kendall Aaron";
       const timestamp = new Date().toISOString();
       const milestoneVariances = milestones.map(m => ({
@@ -386,10 +529,17 @@ export default function ObservationWorkbenchPage() {
         actionItems: reportForm.actionItems || ""
       });
 
+      const clearedReportForm = emptyWorkbenchReportForm();
+      const clearedState = { ...currentDraftState, reportForm: clearedReportForm };
+      const clearedSignature = workbenchStateSignature(clearedState);
+      setReportForm(clearedReportForm);
+      latestSignatureRef.current = clearedSignature;
+      if (!await persistWorkbenchState({ stateOverride: clearedState })) throw new Error("Report committed, but the completed draft could not be cleared.");
       toast({ title: "Report Committed" });
-      setReportForm({ periodStart: "", periodEnd: "", lookAhead: "", risks: "", impact: "", resolutionPlan: "", actionItems: "" });
       setIsReportModalOpen(false);
-    } catch (err) { toast({ variant: "destructive", title: "Error" }); } finally { setIsSubmitting(false); }
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Report Save Error", description: error.message || "The status report could not be saved." });
+    } finally { setIsSubmitting(false); }
   };
 
   const handleLogJournal = async (e: React.FormEvent) => {
@@ -409,7 +559,7 @@ export default function ObservationWorkbenchPage() {
     setMilestones(milestones.filter(m => m.id !== id));
     setHasUnsavedChanges(true);
     setEditingMilestone(null);
-    toast({ title: "Milestone Removed", description: "Click 'Save Workbench Settings' to persist changes." });
+    toast({ title: "Milestone Removed", description: "The change is queued for autosave. Use Save Draft Now for immediate confirmation." });
   };
 
   return (
@@ -439,14 +589,15 @@ export default function ObservationWorkbenchPage() {
             </select>
           </div>
 
-          {hasUnsavedChanges && (
-            <Badge className="bg-amber-100 border border-amber-300 text-amber-800 font-bold h-10 px-3 rounded-sm flex items-center gap-1.5 animate-pulse shrink-0">
-              <AlertTriangle className="h-4 w-4 text-amber-600" /> Unsaved Changes
-            </Badge>
-          )}
+          <div data-testid="workbench-save-status" className="min-w-32 text-right">
+            {saveStatus === "dirty" && <span className="text-xs font-bold text-amber-700 flex items-center justify-end gap-1"><AlertTriangle className="h-3.5 w-3.5" /> Unsaved changes</span>}
+            {saveStatus === "saving" && <span className="text-xs font-bold text-blue-700 flex items-center justify-end gap-1"><Clock className="h-3.5 w-3.5 animate-pulse" /> Saving...</span>}
+            {saveStatus === "saved" && lastSavedAt && <span className="text-xs font-bold text-emerald-700 flex items-center justify-end gap-1"><CheckCircle2 className="h-3.5 w-3.5" /> Saved at {new Date(lastSavedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>}
+            {saveStatus === "error" && <div className="flex flex-col items-end gap-1"><span className="text-xs font-bold text-red-700">Save failed</span><button type="button" onClick={() => { latestSignatureRef.current = currentDraftSignature; void persistWorkbenchState({ notify: true }); }} className="text-[10px] font-bold text-red-700 underline" title={saveError}>Retry</button></div>}
+          </div>
 
           <Button onClick={handleSaveWorkbenchState} disabled={isSavingState} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 rounded-sm px-4 flex items-center gap-1.5 cursor-pointer shadow-xs">
-            <Save className="h-4 w-4" /> {isSavingState ? "Saving..." : "Save Workbench Settings"}
+            <Save className="h-4 w-4" /> {isSavingState ? "Saving..." : "Save Draft Now"}
           </Button>
 
           <Button onClick={exportFieldObservationsCSV} variant="outline" className="border-slate-300 hover:bg-slate-50 text-slate-700 font-bold h-10 rounded-sm px-4 flex items-center gap-1.5 cursor-pointer shadow-xs">
@@ -458,6 +609,19 @@ export default function ObservationWorkbenchPage() {
           </Button>
         </div>
       </div>
+
+      {localRecoveryCandidate && (
+        <div className="border border-amber-300 bg-amber-50 rounded-sm p-4 flex items-center justify-between gap-4" role="alert">
+          <div>
+            <p className="text-sm font-bold text-amber-900">A newer local draft was found for this project.</p>
+            <p className="text-xs text-amber-800 mt-1">Local copy saved {new Date(localRecoveryCandidate.savedAt).toLocaleString()}. Choose which version to keep; nothing will be overwritten until you decide.</p>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button type="button" onClick={restoreLocalDraft} className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold">Restore Local Draft</Button>
+            <Button type="button" onClick={useServerDraft} variant="outline" className="border-amber-400 text-amber-900 text-xs font-bold">Use Server Version</Button>
+          </div>
+        </div>
+      )}
 
       {/* HEALTH HUD */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -829,7 +993,10 @@ export default function ObservationWorkbenchPage() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-6">
-              <div className="flex justify-end mb-4">
+              <div className="flex items-center justify-between mb-4">
+                 <span className={`text-[11px] font-bold ${saveStatus === "error" ? "text-red-700" : saveStatus === "dirty" ? "text-amber-700" : "text-slate-500"}`}>
+                   {saveStatus === "saving" ? "Saving draft..." : saveStatus === "dirty" ? "Unsaved changes" : saveStatus === "error" ? "Save failed — use Retry above" : lastSavedAt ? `Draft saved at ${new Date(lastSavedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Draft not yet saved"}
+                 </span>
                  <Button type="button" onClick={handleAutoGenerateReport} disabled={isGenerating || journalLogs.length === 0} className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs h-8 gap-1.5 cursor-pointer rounded-sm">
                    <Sparkles className="h-3.5 w-3.5" />
                    {isGenerating ? "Analyzing Journals..." : "Auto-Draft"}
@@ -846,8 +1013,8 @@ export default function ObservationWorkbenchPage() {
                   <div><label className="block text-xs font-bold text-slate-700 mb-1 text-red-600"><AlertCircle className="h-3 w-3 inline mr-1" /> Risks</label><Textarea placeholder="Identify blockers..." value={reportForm.risks} onChange={e => setReportForm({...reportForm, risks: e.target.value})} className="text-xs rounded-sm resize-none border-red-200 bg-white" rows={2} required /></div>
                   <div><label className="block text-xs font-bold text-slate-700 mb-1">Impact</label><Textarea placeholder="Financial or schedule impact..." value={reportForm.impact} onChange={e => setReportForm({...reportForm, impact: e.target.value})} className="text-xs rounded-sm resize-none bg-white" rows={2} required /></div>
                 </div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Resolution Plan</label><Textarea placeholder="Describe specific mitigation..." value={reportForm.resolutionPlan} maxLength={500} className="text-xs rounded-sm resize-none bg-white" rows={3} required /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1">Action Items Required</label><Textarea placeholder="List outstanding decisions..." value={reportForm.actionItems} className="text-xs rounded-sm resize-none bg-white" rows={2} /></div>
+                <div><label className="block text-xs font-bold text-slate-700 mb-1">Resolution Plan</label><Textarea placeholder="Describe specific mitigation..." value={reportForm.resolutionPlan} onChange={e => setReportForm({...reportForm, resolutionPlan: e.target.value})} maxLength={500} className="text-xs rounded-sm resize-none bg-white" rows={3} required /></div>
+                <div><label className="block text-xs font-bold text-slate-700 mb-1">Action Items Required</label><Textarea placeholder="List outstanding decisions..." value={reportForm.actionItems} onChange={e => setReportForm({...reportForm, actionItems: e.target.value})} className="text-xs rounded-sm resize-none bg-white" rows={2} /></div>
               </form>
             </div>
             <div className="p-4 border-t bg-slate-50 flex justify-end gap-3 rounded-b-lg">

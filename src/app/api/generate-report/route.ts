@@ -1,123 +1,68 @@
-// File: src/app/api/generate-report/route.ts
-
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 import { NextResponse } from "next/server";
+import { z } from "genkit";
+import { ai } from "@/ai/genkit";
 import { getFirebaseAdmin } from "@/lib/firebase-admin";
-import { z } from "zod";
-import { isActiveRaidRecord, normalizeRaidProbability, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+
+const journalEntrySchema = z.object({
+  text: z.string().trim().min(1).max(10_000),
+  timestamp: z.string().max(100).optional(),
+  loggedBy: z.string().max(320).optional(),
+}).passthrough();
 
 const generateReportRequestSchema = z.object({
-  reportType: z.string().trim().min(1).max(100).optional(),
-  projectId: z.string().trim().min(1).max(128).optional(),
-  dateRange: z.object({
-    start: z.string().trim().max(40).optional(),
-    end: z.string().trim().max(40).optional(),
-  }).strict().optional(),
-  options: z.record(z.unknown()).optional(),
-  journalEntries: z.array(z.unknown()).max(500).optional(),
-  reportingPeriod: z.string().trim().max(200).optional(),
+  projectId: z.string().trim().min(1).max(128),
+  journalEntries: z.array(journalEntrySchema).min(1).max(500),
+  reportingPeriod: z.string().trim().min(1).max(200),
 }).strict();
 
+const reportDraftSchema = z.object({
+  lookAhead: z.string().describe("Concise three-week look-ahead grounded only in the journal entries."),
+  risks: z.string().describe("Specific current risks found in the journal entries, or 'No material risk identified.'"),
+  impact: z.string().describe("Supported schedule, cost, scope, or operational impacts without fabrication."),
+  resolutionPlan: z.string().describe("Specific mitigation or resolution steps supported by the journal entries."),
+  actionItems: z.array(z.string()).describe("Concrete follow-up actions supported by the journal entries."),
+});
+
 export async function POST(request: Request) {
-  const authorization = request.headers.get("authorization");
-  const token = authorization?.startsWith("Bearer ")
-    ? authorization.slice(7).trim()
-    : "";
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!token) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  let admin;
+  const admin = getFirebaseAdmin();
   try {
-    admin = getFirebaseAdmin();
     await admin.auth.verifyIdToken(token);
   } catch {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    let requestPayload: unknown;
-    try {
-      requestPayload = await request.json();
-    } catch {
-      return NextResponse.json({
-        error: "Bad Request",
-        details: { formErrors: ["Request body must contain valid JSON."], fieldErrors: {} },
-      }, { status: 400 });
+    const parsed = generateReportRequestSchema.safeParse(await request.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Bad Request", details: parsed.error.flatten() }, { status: 400 });
     }
 
-    const validation = generateReportRequestSchema.safeParse(requestPayload);
-    if (!validation.success) {
-      return NextResponse.json({
-        error: "Bad Request",
-        details: validation.error.flatten(),
-      }, { status: 400 });
-    }
-
-    const { reportType, projectId } = validation.data;
-    const db = admin.db;
-    
-    // Fetch active registry matrices
-    const raidSnapshot = await db.collection("raid_matrix").get();
-    const raidItems = raidSnapshot.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter((item: any) => isActiveRaidRecord(item))
-      .filter((item: any) => !projectId || projectId === "all" || item.projectId === projectId);
-
-    const projectDocs = await db.collection("admin_projects").get();
-    const projectNames = new Map(projectDocs.docs.map(doc => [doc.id, doc.data().name || doc.data().projectName || doc.id]));
-
-    const projectSnapshot = projectId && projectId !== "all" 
-      ? await db.collection("admin_projects").doc(projectId).get()
-      : null;
-    const projectData = projectSnapshot?.exists ? projectSnapshot.data() : null;
-    const projectName = projectData?.name || "All Projects Portfolio";
-
-    // Build assessment report content block
-    let reportText = `=========================================\n`;
-    reportText += `       PROGRAM ASSESSMENT STATUS REPORT   \n`;
-    reportText += `=========================================\n\n`;
-    reportText += `Report Type: ${reportType || "Status Summary"}\n`;
-    reportText += `Target Scope: ${projectName}\n`;
-    reportText += `Generated At: ${new Date().toLocaleString()}\n`;
-    reportText += `-----------------------------------------\n\n`;
-
-    reportText += `[Metrics Summary]\n`;
-    const counts = { Risk: 0, Assumption: 0, Issue: 0, Dependency: 0 };
-    raidItems.forEach((item: any) => {
-      const cls = item.classification;
-      if (cls in counts) {
-        counts[cls as keyof typeof counts]++;
-      }
+    const journalText = parsed.data.journalEntries
+      .map(entry => `[${entry.timestamp || "Date unavailable"}] ${entry.text}`)
+      .join("\n\n");
+    const { output } = await ai.generate({
+      system: [
+        "You prepare concise construction-program status report drafts for a Program Manager.",
+        "Use only the supplied journal evidence. Do not invent dates, commitments, risks, impacts, owners, or mitigations.",
+        "Treat observations explicitly described as non-risks as context, not as risks.",
+        "Return a practical draft for human review, not a final certification.",
+      ].join(" "),
+      prompt: `Project ID: ${parsed.data.projectId}\nReporting period: ${parsed.data.reportingPeriod}\n\nJournal entries:\n${journalText}`,
+      output: { schema: reportDraftSchema },
     });
-
-    reportText += `- Active Risks: ${counts.Risk}\n`;
-    reportText += `- Active Assumptions: ${counts.Assumption}\n`;
-    reportText += `- Active Issues: ${counts.Issue}\n`;
-    reportText += `- Active Dependencies: ${counts.Dependency}\n`;
-    reportText += `\nDetailed RAID Matrices:\n`;
-
-    raidItems.forEach((item: any, idx: number) => {
-      reportText += `${idx + 1}. RAID ID: ${item.raidNumber || item.id} | [${item.classification}] ${item.title} (Owner: ${item.assignedOwner || item.owner || "Unassigned"})\n`;
-      reportText += `   Project ID: ${item.projectId || "Unassigned"} | Project Name: ${resolveProjectName(item.projectId, projectNames, item.projectName)}\n`;
-      reportText += `   Description: ${item.description || "No description provided."}\n`;
-      reportText += `   Probability Score: ${normalizeRaidProbability(item.probability)} / 4 | Importance: ${item.importance || "N/A"} | Ownership: ${resolveRaidOwnershipState(item)}\n\n`;
-    });
-
-    // Clean scrubbing: Removed all literal text references and hyper-links to AviaTrack/AviaITrack completely.
-    reportText += `-----------------------------------------\n`;
-    reportText += `End of Program Assessment Status Report\n`;
-    reportText += `=========================================\n`;
+    if (!output) throw new Error("Gemini returned no structured report draft.");
 
     return NextResponse.json({
-      success: true,
-      reportText,
-      projectName
+      projectSummaries: [{ projectId: parsed.data.projectId, ...output }],
     });
   } catch (error: any) {
-    console.error("Report Generation Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Status report auto-draft failed:", error);
+    return NextResponse.json({ error: error.message || "Status report auto-draft failed." }, { status: 500 });
   }
 }
