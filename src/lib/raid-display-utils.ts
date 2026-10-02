@@ -22,6 +22,14 @@ const ownershipStateByKey = new Map(
 
 const unassignedOwners = new Set(["", "unassigned", "none", "n/a", "na", "unknown"]);
 
+export function isArchivedRaidRecord(item: Record<string, unknown>): boolean {
+  return item.archived === true || String(item.status || "").trim().toLowerCase() === "archived";
+}
+
+export function isActiveRaidRecord(item: Record<string, unknown>): boolean {
+  return item.mergeStatus !== "MERGED" && !isArchivedRaidRecord(item);
+}
+
 export function normalizeRaidProbability(value: unknown): number {
   if (value === null || value === undefined || value === "") return 2;
   const parsed = Number(value);
@@ -66,6 +74,11 @@ export function resolveProjectName(
 
 export function formatRaidNumber(sequence: number): string {
   return `RAID-${sequence}`;
+}
+
+export function nextRaidSequence(lastSequence: unknown, floor = 1000): number {
+  const parsed = Number(lastSequence);
+  return Math.max(floor, Number.isFinite(parsed) ? Math.floor(parsed) : floor) + 1;
 }
 
 export function raidCreatedAtMillis(value: unknown): number {

@@ -4,6 +4,9 @@ import {
   buildRaidNumberingMapping,
   createProjectNameMap,
   formatRaidNumber,
+  isActiveRaidRecord,
+  isArchivedRaidRecord,
+  nextRaidSequence,
   normalizeRaidProbability,
   raidCreatedAtMillis,
   resolveProjectName,
@@ -31,8 +34,16 @@ test("uses admin_projects names before legacy names and project IDs", () => {
 
 test("formats deterministic RAID business numbers and creation ordering values", () => {
   assert.equal(formatRaidNumber(1001), "RAID-1001");
+  assert.equal(nextRaidSequence(1045), 1046);
   assert.equal(raidCreatedAtMillis("2026-08-05T00:00:00.000Z"), Date.parse("2026-08-05T00:00:00.000Z"));
   assert.equal(raidCreatedAtMillis(null), Number.POSITIVE_INFINITY);
+});
+
+test("archive retains the record but removes it from active views", () => {
+  const archived = { raidNumber: "RAID-1010", archived: true, status: "Archived" };
+  assert.equal(isArchivedRaidRecord(archived), true);
+  assert.equal(isActiveRaidRecord(archived), false);
+  assert.equal(isActiveRaidRecord({ raidNumber: "RAID-1011", status: "Identified" }), true);
 });
 
 test("numbers only active canonicals by creation date with document ID tie-breaking", () => {

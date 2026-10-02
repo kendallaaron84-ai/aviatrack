@@ -22,6 +22,10 @@ export function raidProjectLockId(projectId: string): string {
   return `raid_ingestion_${createHash("sha256").update(projectId).digest("hex").slice(0, 24)}`;
 }
 
+export function raidSuppressionId(raidDocumentId: string): string {
+  return `SUP_${createHash("sha256").update(raidDocumentId).digest("hex").slice(0, 32)}`;
+}
+
 export function fieldObservationSourceKey(parentId: string, childId: string, reportNumber?: string, itemNumber?: string): string {
   if (reportNumber && itemNumber) return itemNumber.startsWith("FOR-") ? itemNumber : `${reportNumber}-${itemNumber.split("-").pop()}`;
   return `FIELD_${parentId}_${childId}`;

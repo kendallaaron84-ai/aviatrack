@@ -1,18 +1,8 @@
 // File: src/ai/seedMasterData.ts
 import { getFirestore, collection, doc, writeBatch } from "firebase/firestore";
-import { initializeApp, getApps, getApp } from "firebase/app";
+import { firebaseApp } from "@/lib/firebase";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDIC3Tnqfn7bbkbmQf3deFGE5uWDlaoT1I",
-  authDomain: "aviatrack-prod.firebaseapp.com",
-  projectId: "aviatrack-prod",
-  storageBucket: "aviatrack-prod.firebasestorage.app",
-  messagingSenderId: "743112695884",
-  appId: "1:743112695884:web:6633616b6983a005e994e9"
-};
-
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(app);
+const db = getFirestore(firebaseApp);
 
 export async function seedAirportMasterData() {
   const batch = writeBatch(db);

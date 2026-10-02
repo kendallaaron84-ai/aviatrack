@@ -2,6 +2,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { 
   ShieldCheck, Plus, Trash2, Save, UserPlus, 
   FolderKanban, Terminal, MapPin, Layers, HelpCircle, KeyRound,
-  Archive, CheckCircle, FileText
+  Archive, CheckCircle, FileText, SearchCheck
 } from "lucide-react";
 
 // Centralized Firebase Imports
@@ -252,12 +253,17 @@ export default function AdminPortalPage() {
 
   return (
     <div className="max-w-[1500px] mx-auto space-y-6 pb-12 font-sans">
-      <div className="flex items-center gap-2 border-b pb-4">
-        <ShieldCheck className="h-6 w-6 text-emerald-600" />
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">PM Control Workspace</h1>
-          <p className="text-sm text-slate-500">Inject master project modules, update active site rosters, locations, and commit weekly summaries.</p>
+      <div className="flex items-center justify-between gap-4 border-b pb-4">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-6 w-6 text-emerald-600" />
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">PM Control Workspace</h1>
+            <p className="text-sm text-slate-500">Inject master project modules, update active site rosters, locations, and commit weekly summaries.</p>
+          </div>
         </div>
+        <Button variant="outline" asChild className="rounded-sm shrink-0">
+          <Link href="/dashboard/admin/evidence-integrity"><SearchCheck className="h-4 w-4 mr-1" /> Evidence Audit</Link>
+        </Button>
       </div>
 
       {/* 🟢 NEW: ACTIVE MANAGEMENT FOCUS CONTROLLER */}

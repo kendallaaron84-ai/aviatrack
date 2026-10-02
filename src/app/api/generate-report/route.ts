@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { getFirebaseAdmin } from "@/lib/firebase-admin";
 import { z } from "zod";
-import { normalizeRaidProbability, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+import { isActiveRaidRecord, normalizeRaidProbability, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 const generateReportRequestSchema = z.object({
   reportType: z.string().trim().min(1).max(100).optional(),
@@ -63,7 +63,7 @@ export async function POST(request: Request) {
     const raidSnapshot = await db.collection("raid_matrix").get();
     const raidItems = raidSnapshot.docs
       .map(d => ({ id: d.id, ...d.data() }))
-      .filter((item: any) => item.mergeStatus !== "MERGED")
+      .filter((item: any) => isActiveRaidRecord(item))
       .filter((item: any) => !projectId || projectId === "all" || item.projectId === projectId);
 
     const projectDocs = await db.collection("admin_projects").get();

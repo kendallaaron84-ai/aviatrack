@@ -17,7 +17,7 @@ import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTel
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 import { extractReportingPeriodEnd, normalizeDate, varianceDays } from "@/lib/date-utils";
 import { addChronologicalTimestamps, buildSparseEvmSeries, calculateEvm, resolveReportingCutoff } from "@/lib/evm-utils";
-import { createProjectNameMap, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+import { createProjectNameMap, isActiveRaidRecord, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Definitive Risk Status Colors System
 const STATUS_COLORS: Record<string, string> = RAID_OWNERSHIP_COLORS;
@@ -117,7 +117,7 @@ export default function AviationExecutiveControlRoom() {
       setWorkbenchStates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     }, (error) => console.error("Firestore project_workbench_states listener error:", error));
     const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (snapshot) => {
-      setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED"));
+      setRaidItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => isActiveRaidRecord(item)));
     }, (error) => console.error("Firestore raid_matrix listener error:", error));
 
     return () => { 

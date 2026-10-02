@@ -15,6 +15,22 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Server-owned memory of Program Manager RAID rejection decisions.
+    // Only authenticated Admin SDK routes may create or inspect suppressions.
+    match /raid_suppressions/{suppressionId} {
+      allow read, write: if false;
+    }
+
+    // RAID creation, deletion, and archive transitions are server-authoritative.
+    // Signed-in users retain existing triage-field editing access.
+    match /raid_matrix/{raidId} {
+      allow read: if isSignedIn();
+      allow create, delete: if false;
+      allow update: if isSignedIn()
+        && request.resource.data.get('archived', false) == resource.data.get('archived', false)
+        && request.resource.data.get('status', '') != 'Archived';
+    }
+
     // 1. Field Observations & Executive Sub-Chats
     match /field_observations/{observationId} {
       allow read, write: if isSignedIn();
@@ -138,7 +154,9 @@ service cloud.firestore {
     // cannot override this recursive authenticated-user fallback.
     match /{topLevelCollection}/{document=**} {
       allow read, write: if isSignedIn()
-        && topLevelCollection != "counters";
+        && topLevelCollection != "counters"
+        && topLevelCollection != "raid_suppressions"
+        && topLevelCollection != "raid_matrix";
     }
   }
 }

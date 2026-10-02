@@ -1,25 +1,35 @@
 // File: src/app/field/page.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Plane, CloudSun, Building2, ArrowLeft, CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { Plane, CloudSun, Building2, ArrowLeft, CheckCircle2, Plus, Trash2, AlertTriangle, RotateCcw } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea"; 
 import Link from "next/link";
 import { getAuth } from "firebase/auth";
 
 // Centralized Firebase Imports + Added Storage Tools
 import { db, auth } from "@/lib/firebase";
-import { collection, onSnapshot, addDoc } from "firebase/firestore";
-import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+import { collection, onSnapshot, doc, updateDoc, writeBatch } from "firebase/firestore";
+import { getStorage, ref as storageRef, getDownloadURL, getMetadata, uploadBytesResumable } from "firebase/storage";
 import { formatItemNumber } from "@/lib/field-observation-utils";
+import { deleteStagedEvidence, deleteStagedEvidenceMany, getStagedEvidence, getStagedEvidenceMany, putStagedEvidence } from "@/lib/evidence-draft-store";
+import { evidenceStoragePath, evidenceSummary, isNonEmptyEvidence, sha256Hex, type EvidenceManifestEntry, type EvidenceVerificationStatus, type StagedEvidenceRecord } from "@/lib/evidence-integrity";
 
 const STAGES = ["Construction", "Commission", "ORAT Trials", "Close-Out - Operations"];
 const WEATHER_OPTIONS = ["Raining", "Dry", "Hot", "Cold"];
 const OBSERVATION_TYPES = ["General", "Risk", "Safety", "Change Request"];
 const PRIORITIES = ["Low", "Medium", "High"];
+const MAX_UPLOAD_ATTEMPTS = 3;
+
+type FieldObservationAllocation = {
+  id: string;
+  reportNumber: string;
+  sequenceNumber: number;
+  submittedAt: string;
+};
 
 const getObservationPhotos = (obs: any): string[] => {
   if (Array.isArray(obs.photos) && obs.photos.length > 0) return obs.photos;
@@ -39,6 +49,9 @@ export default function FieldIntakePage() {
   const [uploadProgressList, setUploadProgressList] = useState<any[]>([]);
   // Local storage draft restore tracking state
   const [savedDraftExists, setSavedDraftExists] = useState(false);
+  const [draftReady, setDraftReady] = useState(false);
+  const [draftId, setDraftId] = useState(() => crypto.randomUUID());
+  const [pendingAllocation, setPendingAllocation] = useState<FieldObservationAllocation | null>(null);
 
   // Dynamic PM Workspace Data Streams
   const [projects, setProjects] = useState<any[]>([]);
@@ -58,8 +71,12 @@ export default function FieldIntakePage() {
 
   // Multi-photo schema initialization
   const [observationsList, setObservationsList] = useState<any[]>([
-    { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }
+    { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [], evidenceIds: [] }
   ]);
+
+  const evidenceStateSummary = useMemo(() => evidenceSummary(
+    uploadProgressList.map(item => item.status as EvidenceVerificationStatus),
+  ), [uploadProgressList]);
 
   // 1. Stream Master Admin Project Directory
   useEffect(() => {
@@ -107,14 +124,18 @@ export default function FieldIntakePage() {
     const savedDraft = localStorage.getItem("field_observation_full_draft");
     if (savedDraft) {
       setSavedDraftExists(true);
+    } else {
+      setDraftReady(true);
     }
   }, []);
 
-  const handleRestoreDraft = () => {
+  const handleRestoreDraft = async () => {
     const saved = localStorage.getItem("field_observation_full_draft");
     if (saved) {
       try {
         const draft = JSON.parse(saved);
+        if (draft.draftId) setDraftId(draft.draftId);
+        if (draft.pendingAllocation) setPendingAllocation(draft.pendingAllocation);
         if (draft.program) setProgram(draft.program);
         if (draft.project) setProject(draft.project);
         if (draft.stage) setStage(draft.stage);
@@ -124,7 +145,33 @@ export default function FieldIntakePage() {
         if (draft.buildingLevel) setBuildingLevel(draft.buildingLevel);
         if (draft.sector) setSector(draft.sector);
         if (draft.selectedPersonnel) setSelectedPersonnel(draft.selectedPersonnel);
-        if (draft.observationsList) setObservationsList(draft.observationsList);
+        if (draft.observationsList) {
+          const restoredObservations = await Promise.all(draft.observationsList.map(async (observation: any) => {
+            const evidenceIds = Array.isArray(observation.evidenceIds) ? observation.evidenceIds : [];
+            const records = await getStagedEvidenceMany(evidenceIds);
+            return {
+              ...observation,
+              evidenceIds: records.map(record => record.id),
+              attachedFiles: records.map(record => new File([record.blob], record.originalFileName, {
+                type: record.contentType,
+                lastModified: record.lastModified,
+              })),
+              previewUrls: records.map(record => URL.createObjectURL(record.blob)),
+            };
+          }));
+          setObservationsList(restoredObservations);
+          const restoredRecords = await getStagedEvidenceMany(restoredObservations.flatMap((observation: any) => observation.evidenceIds || []));
+          setUploadProgressList(restoredRecords.map(record => ({
+            id: record.id,
+            observationId: record.observationId,
+            fileName: record.originalFileName,
+            bytesTransferred: record.status === "VERIFIED" ? record.originalSizeBytes : 0,
+            totalBytes: record.originalSizeBytes,
+            percentage: record.status === "VERIFIED" ? 100 : 0,
+            status: record.status,
+            error: record.lastError || "",
+          })));
+        }
         
         toast({ title: "Draft Restored", description: "Your previously saved field log has been restored." });
       } catch (err) {
@@ -133,20 +180,31 @@ export default function FieldIntakePage() {
       }
     }
     setSavedDraftExists(false);
+    setDraftReady(true);
   };
 
-  const handleDiscardDraft = () => {
-    localStorage.removeItem("field_observation_full_draft");
-    setSavedDraftExists(false);
-    toast({ title: "Draft Discarded", description: "Your local field log draft has been cleared." });
+  const handleDiscardDraft = async () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("field_observation_full_draft") || "{}");
+      const evidenceIds = Array.isArray(saved.observationsList)
+        ? saved.observationsList.flatMap((observation: any) => Array.isArray(observation.evidenceIds) ? observation.evidenceIds : [])
+        : [];
+      await deleteStagedEvidenceMany(evidenceIds);
+      observationsList.forEach(observation => observation.previewUrls?.forEach((url: string) => URL.revokeObjectURL(url)));
+      localStorage.removeItem("field_observation_full_draft");
+      setSavedDraftExists(false);
+      setDraftReady(true);
+      toast({ title: "Draft Discarded", description: "The local field log and its staged evidence have been cleared." });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Draft cleanup failed", description: error.message || "The staged evidence could not be cleared safely." });
+    }
   };
 
-  // 🕒 ENHANCEMENT 1: 30-Second Background Autosave Interval
+  // Persist metadata immediately after each change, then refresh it periodically.
+  // Image bytes live in IndexedDB and are never serialized into localStorage.
   useEffect(() => {
-    const interval = setInterval(() => {
-      // Don't autosave if already submitted successfully
-      if (isSubmittedSuccessfully) return;
-
+    if (!draftReady || isSubmittedSuccessfully) return;
+    const persistDraft = () => {
       const draftPayload = {
         program,
         project,
@@ -157,26 +215,36 @@ export default function FieldIntakePage() {
         buildingLevel,
         sector,
         selectedPersonnel,
+        draftId,
+        pendingAllocation,
         observationsList: observationsList.map(obs => ({
           id: obs.id,
           type: obs.type,
           priority: obs.priority,
           description: obs.description,
-          previewUrls: obs.previewUrls || [],
-          attachedFiles: [] // strip non-serializable File instances
+          evidenceIds: obs.evidenceIds || [],
+          evidenceMetadata: (obs.attachedFiles || []).map((file: File, index: number) => ({
+            evidenceId: obs.evidenceIds?.[index] || "",
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })),
+          attachedFiles: [],
+          previewUrls: [],
         }))
       };
 
       try {
         localStorage.setItem("field_observation_full_draft", JSON.stringify(draftPayload));
-        console.log("Offline Resilience: Form state autosaved to local draft.");
       } catch (err) {
         console.error("Offline Resilience: Autosave write failure:", err);
       }
-    }, 30000); // 30 seconds
+    };
 
+    persistDraft();
+    const interval = setInterval(persistDraft, 30000);
     return () => clearInterval(interval);
-  }, [program, project, stage, location, isExterior, weather, buildingLevel, sector, selectedPersonnel, observationsList, isSubmittedSuccessfully]);
+  }, [program, project, stage, location, isExterior, weather, buildingLevel, sector, selectedPersonnel, observationsList, isSubmittedSuccessfully, draftId, pendingAllocation, draftReady]);
 
   const handlePersonnelToggle = (name: string) => {
     setSelectedPersonnel(prev => 
@@ -198,12 +266,22 @@ export default function FieldIntakePage() {
 
     setObservationsList([
       ...observationsList, 
-      { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }
+      { id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [], evidenceIds: [] }
     ]);
   };
 
-  const removeObservationItem = (id: string) => {
+  const removeObservationItem = async (id: string) => {
     if (observationsList.length === 1) return;
+    const observation = observationsList.find(item => item.id === id);
+    const evidenceIds = observation?.evidenceIds || [];
+    const hasUploadedEvidence = uploadProgressList.some(item => evidenceIds.includes(item.id) && ["UPLOADING", "VERIFYING", "VERIFIED"].includes(item.status));
+    if (hasUploadedEvidence) {
+      toast({ variant: "destructive", title: "Evidence Locked", description: "An observation cannot be removed after its evidence upload has started." });
+      return;
+    }
+    observation?.previewUrls?.forEach((url: string) => URL.revokeObjectURL(url));
+    await deleteStagedEvidenceMany(evidenceIds);
+    setUploadProgressList(previous => previous.filter(item => !evidenceIds.includes(item.id)));
     setObservationsList(observationsList.filter(item => item.id !== id));
   };
 
@@ -211,12 +289,213 @@ export default function FieldIntakePage() {
     setObservationsList(observationsList.map(item => item.id === id ? { ...item, [field]: value } : item));
   };
 
+  const updateEvidenceProgress = (id: string, patch: Record<string, unknown>) => {
+    setUploadProgressList(previous => previous.map(item => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  const stageEvidenceFiles = async (observationId: string, files: File[]) => {
+    const rejected = files.filter(file => !isNonEmptyEvidence(file));
+    const accepted = files.filter(isNonEmptyEvidence);
+
+    if (rejected.length > 0) {
+      toast({
+        variant: "destructive",
+        title: "Zero-byte evidence rejected",
+        description: `The following file${rejected.length === 1 ? " is" : "s are"} empty and must be reselected: ${rejected.map(file => file.name || "Unnamed image").join(", ")}`,
+      });
+    }
+    if (accepted.length === 0) return;
+
+    try {
+      const now = new Date().toISOString();
+      const staged = accepted.map(file => ({
+        record: {
+          id: crypto.randomUUID(),
+          draftId,
+          observationId,
+          originalFileName: file.name || `evidence-${Date.now()}.jpg`,
+          originalSizeBytes: file.size,
+          contentType: file.type || "image/jpeg",
+          lastModified: file.lastModified || Date.now(),
+          blob: file,
+          status: "STAGED" as const,
+          attempts: 0,
+          createdAt: now,
+          updatedAt: now,
+        } satisfies StagedEvidenceRecord,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }));
+
+      await Promise.all(staged.map(item => putStagedEvidence(item.record)));
+      setObservationsList(previous => previous.map(observation => observation.id === observationId ? {
+        ...observation,
+        attachedFiles: [...(observation.attachedFiles || []), ...staged.map(item => item.file)],
+        previewUrls: [...(observation.previewUrls || []), ...staged.map(item => item.previewUrl)],
+        evidenceIds: [...(observation.evidenceIds || []), ...staged.map(item => item.record.id)],
+      } : observation));
+      setUploadProgressList(previous => [
+        ...previous,
+        ...staged.map(item => ({
+          id: item.record.id,
+          observationId,
+          fileName: item.record.originalFileName,
+          bytesTransferred: 0,
+          totalBytes: item.record.originalSizeBytes,
+          percentage: 0,
+          status: "STAGED" as EvidenceVerificationStatus,
+          error: "",
+          task: null,
+        })),
+      ]);
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Evidence staging failed", description: error.message || "The original image could not be retained in browser storage." });
+    }
+  };
+
+  const removeEvidenceFrame = async (observationId: string, index: number) => {
+    const observation = observationsList.find(item => item.id === observationId);
+    const evidenceId = observation?.evidenceIds?.[index];
+    const progress = uploadProgressList.find(item => item.id === evidenceId);
+    if (progress && ["UPLOADING", "VERIFYING", "VERIFIED"].includes(progress.status)) {
+      toast({ variant: "destructive", title: "Evidence Locked", description: "This frame cannot be removed after its cloud upload has started." });
+      return;
+    }
+    if (evidenceId) await deleteStagedEvidence(evidenceId);
+    const previewUrl = observation?.previewUrls?.[index];
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setUploadProgressList(previous => previous.filter(item => item.id !== evidenceId));
+    setObservationsList(previous => previous.map(item => item.id === observationId ? {
+      ...item,
+      attachedFiles: (item.attachedFiles || []).filter((_: unknown, fileIndex: number) => fileIndex !== index),
+      previewUrls: (item.previewUrls || []).filter((_: unknown, previewIndex: number) => previewIndex !== index),
+      evidenceIds: (item.evidenceIds || []).filter((_: unknown, evidenceIndex: number) => evidenceIndex !== index),
+    } : item));
+  };
+
+  const verifyRetrievable = async (downloadUrl: string) => {
+    const response = await fetch(downloadUrl, { headers: { Range: "bytes=0-0" }, cache: "no-store" });
+    if (!response.ok) throw new Error(`Evidence retrieval returned HTTP ${response.status}.`);
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength < 1) throw new Error("Evidence retrieval returned no bytes.");
+  };
+
+  const uploadAndVerifyEvidence = async (
+    sourceRecord: StagedEvidenceRecord,
+    allocation: FieldObservationAllocation,
+    resetAttempts = false,
+  ): Promise<StagedEvidenceRecord> => {
+    let record = { ...sourceRecord, attempts: resetAttempts ? 0 : sourceRecord.attempts };
+    const storage = getStorage();
+
+    if (record.status === "VERIFIED" && record.manifest) {
+      try {
+        const existingRef = storageRef(storage, record.manifest.storagePath);
+        const metadata = await getMetadata(existingRef);
+        if (Number(metadata.size) !== record.originalSizeBytes || Number(metadata.size) <= 0) throw new Error("Stored size no longer matches the staged original.");
+        await verifyRetrievable(record.manifest.downloadUrl);
+        updateEvidenceProgress(record.id, { status: "VERIFIED", percentage: 100, error: "" });
+        return record;
+      } catch (error: any) {
+        record = { ...record, status: "FAILED", lastError: error.message || "Previously verified evidence could not be revalidated." };
+        await putStagedEvidence(record);
+      }
+    }
+
+    for (let attempt = record.attempts + 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt++) {
+      const storagePath = evidenceStoragePath(allocation.id, record.observationId, record.id, record.originalFileName, attempt);
+      const reference = storageRef(storage, storagePath);
+      record = { ...record, status: "UPLOADING", attempts: attempt, updatedAt: new Date().toISOString(), lastError: "" };
+      await putStagedEvidence(record);
+      updateEvidenceProgress(record.id, { status: "UPLOADING", percentage: 0, error: "", attempt });
+
+      try {
+        const file = new File([record.blob], record.originalFileName, { type: record.contentType, lastModified: record.lastModified });
+        if (!isNonEmptyEvidence(file)) throw new Error("The locally staged original is zero bytes.");
+        const originalSha256 = await sha256Hex(file);
+        const uploadTask = uploadBytesResumable(reference, file, {
+          contentType: record.contentType,
+          customMetadata: {
+            evidenceId: record.id,
+            originalFileName: record.originalFileName,
+            originalSizeBytes: String(record.originalSizeBytes),
+            originalSha256,
+          },
+        });
+        updateEvidenceProgress(record.id, { task: uploadTask });
+        await new Promise<void>((resolve, reject) => uploadTask.on(
+          "state_changed",
+          snapshot => updateEvidenceProgress(record.id, {
+            bytesTransferred: snapshot.bytesTransferred,
+            totalBytes: snapshot.totalBytes,
+            percentage: snapshot.totalBytes > 0 ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100) : 0,
+            status: snapshot.state === "paused" ? "STAGED" : "UPLOADING",
+          }),
+          reject,
+          resolve,
+        ));
+
+        updateEvidenceProgress(record.id, { status: "VERIFYING", percentage: 100, task: null });
+        const metadata = await getMetadata(reference);
+        const storedSizeBytes = Number(metadata.size);
+        if (storedSizeBytes <= 0) throw new Error("Firebase stored a zero-byte object.");
+        if (storedSizeBytes !== record.originalSizeBytes) {
+          throw new Error(`Stored size ${storedSizeBytes} does not match original size ${record.originalSizeBytes}.`);
+        }
+        const downloadUrl = await getDownloadURL(reference);
+        await verifyRetrievable(downloadUrl);
+        const verifiedAt = new Date().toISOString();
+        const manifest: EvidenceManifestEntry = {
+          evidenceId: record.id,
+          storagePath,
+          downloadUrl,
+          originalFileName: record.originalFileName,
+          originalSizeBytes: record.originalSizeBytes,
+          storedSizeBytes,
+          contentType: metadata.contentType || record.contentType,
+          verificationStatus: "VERIFIED",
+          verifiedAt,
+          originalSha256,
+          storageMd5Hash: metadata.md5Hash || "",
+          uploadAttempts: attempt,
+        };
+        record = { ...record, status: "VERIFIED", attempts: attempt, manifest, updatedAt: verifiedAt, lastError: "" };
+        await putStagedEvidence(record);
+        updateEvidenceProgress(record.id, { status: "VERIFIED", percentage: 100, error: "", task: null });
+        return record;
+      } catch (error: any) {
+        const lastError = error.message || "Evidence upload or verification failed.";
+        record = { ...record, status: "FAILED", attempts: attempt, updatedAt: new Date().toISOString(), lastError };
+        await putStagedEvidence(record);
+        updateEvidenceProgress(record.id, { status: "FAILED", error: lastError, task: null });
+        if (attempt < MAX_UPLOAD_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, attempt * 500));
+      }
+    }
+    throw new Error(record.lastError || "Evidence failed after three upload attempts.");
+  };
+
+  const retryEvidenceFrame = async (evidenceId: string) => {
+    if (!pendingAllocation) {
+      toast({ variant: "destructive", title: "Submission not allocated", description: "Select Submit All Field Logs once to allocate the report before retrying an upload." });
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const record = await getStagedEvidence(evidenceId);
+      if (!record) throw new Error("The locally staged original is unavailable.");
+      await uploadAndVerifyEvidence(record, pendingAllocation, true);
+      toast({ title: "Evidence verified", description: `${record.originalFileName} passed Storage size and retrieval verification. Finalize the submission when all frames are verified.` });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Retry failed", description: error.message || "Evidence remains locally staged for another retry." });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleFormSubmission = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return; 
     setIsSubmitting(true);
-    setUploadProgressList([]); // reset progress tracker
-
     try {
       const authInstance = getAuth();
       const currentUser = authInstance.currentUser;
@@ -229,8 +508,7 @@ export default function FieldIntakePage() {
       await currentUser.getIdToken(true);
 
       const emailUser = currentUser.email || "Kendall Aaron";
-      const submissionTimestamp = new Date().toISOString();
-      const storageInstance = getStorage();
+      const submissionTimestamp = pendingAllocation?.submittedAt || new Date().toISOString();
 
       const activeProjectObj = projects.find(p => p.id === project);
       const projectDisplayName = activeProjectObj ? activeProjectObj.name : project;
@@ -266,104 +544,71 @@ export default function FieldIntakePage() {
         buildingLevel,
         sector: sector || "00",
         presentAtSite: selectedPersonnel.join(", "), 
-        status: "Needs Verification",
+        status: "Evidence Upload Pending",
         search_tags: parent_search_tags
       };
 
-      const idToken = await currentUser.getIdToken();
-      const allocationResponse = await fetch("/api/field-observations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify(fieldReportPayload),
-      });
-      const allocation = await allocationResponse.json();
-      if (!allocationResponse.ok) throw new Error(allocation.error || "Unable to allocate Field Observation number.");
-      const docRef = { id: allocation.id };
-
-      // Pre-calculate progress tracking items for files
-      const progressItems: any[] = [];
-      const uploadsToRun: { id: string; file: File; obsId: string; storageRefInstance: any }[] = [];
-
-      for (const [observationIndex, obs] of observationsList.entries()) {
-        if (obs.attachedFiles && obs.attachedFiles.length > 0) {
-          for (const file of obs.attachedFiles) {
-            const uId = crypto.randomUUID();
-            const fileExtension = file.name.split('.').pop() || 'jpg';
-            const storagePath = `field_evidence/${docRef.id}-${obs.id}-${uId}.${fileExtension}`;
-            const storageRefInstance = storageRef(storageInstance, storagePath);
-            
-            progressItems.push({
-              id: uId,
-              fileName: file.name,
-              bytesTransferred: 0,
-              totalBytes: file.size,
-              percentage: 0,
-              status: 'running',
-              task: null
-            });
-
-            uploadsToRun.push({
-              id: uId,
-              file,
-              obsId: obs.id,
-              storageRefInstance
-            });
-          }
-        }
-      }
-
-      setUploadProgressList(progressItems);
-
-      const cloudUrlsByObs: Record<string, string[]> = {};
-
-      // Run uploads sequentially with progress hook
-      for (const item of uploadsToRun) {
-        const uploadTask = uploadBytesResumable(item.storageRefInstance, item.file);
-
-        // Bind active upload task to tracking list
-        setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, task: uploadTask } : p));
-
-        const downloadUrl = await new Promise<string>((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot) => {
-              const bytesTransferred = snapshot.bytesTransferred;
-              const totalBytes = snapshot.totalBytes;
-              const percentage = totalBytes > 0 ? Math.round((bytesTransferred / totalBytes) * 100) : 0;
-              
-              let status: 'running' | 'paused' | 'success' | 'error' = 'running';
-              if (snapshot.state === 'paused') {
-                status = 'paused';
-              }
-
-              setUploadProgressList(prev => prev.map(p => p.id === item.id ? {
-                ...p,
-                bytesTransferred,
-                totalBytes,
-                percentage,
-                status
-              } : p));
-            },
-            (error) => {
-              setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'error' } : p));
-              reject(error);
-            },
-            async () => {
-              const url = await getDownloadURL(uploadTask.snapshot.ref);
-              setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'success', percentage: 100 } : p));
-              resolve(url);
-            }
-          );
+      let allocation = pendingAllocation;
+      if (!allocation) {
+        const idToken = await currentUser.getIdToken();
+        const allocationResponse = await fetch("/api/field-observations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify(fieldReportPayload),
         });
+        const allocationResult = await allocationResponse.json();
+        if (!allocationResponse.ok) throw new Error(allocationResult.error || "Unable to allocate Field Observation number.");
+        allocation = { ...allocationResult, submittedAt: submissionTimestamp };
+        setPendingAllocation(allocation);
+        const savedDraft = JSON.parse(localStorage.getItem("field_observation_full_draft") || "{}");
+        localStorage.setItem("field_observation_full_draft", JSON.stringify({ ...savedDraft, draftId, pendingAllocation: allocation }));
+      }
+      if (!allocation) throw new Error("Field Observation allocation was not returned by the server.");
 
-        if (!cloudUrlsByObs[item.obsId]) {
-          cloudUrlsByObs[item.obsId] = [];
+      const evidenceIds = observationsList.flatMap(observation => observation.evidenceIds || []);
+      const stagedRecords = await getStagedEvidenceMany(evidenceIds);
+      if (stagedRecords.length !== evidenceIds.length) throw new Error("One or more locally staged originals are missing. Reselect the affected frames before submitting.");
+      const zeroByteRecords = stagedRecords.filter(record => !isNonEmptyEvidence(record.blob) || record.originalSizeBytes <= 0);
+      if (zeroByteRecords.length > 0) throw new Error(`Zero-byte evidence rejected: ${zeroByteRecords.map(record => record.originalFileName).join(", ")}`);
+
+      const verifiedRecords: StagedEvidenceRecord[] = [];
+      const failedRecords: StagedEvidenceRecord[] = [];
+      for (const record of stagedRecords) {
+        if (record.status === "FAILED" && record.attempts >= MAX_UPLOAD_ATTEMPTS) {
+          failedRecords.push(record);
+          continue;
         }
-        cloudUrlsByObs[item.obsId].push(downloadUrl);
+        try {
+          verifiedRecords.push(await uploadAndVerifyEvidence(record, allocation));
+        } catch {
+          failedRecords.push((await getStagedEvidence(record.id)) || record);
+        }
       }
 
+      if (failedRecords.length > 0) {
+        await updateDoc(doc(db, "field_observations", allocation.id), {
+          status: "Evidence Upload Incomplete",
+          evidenceIntegrity: {
+            total: stagedRecords.length,
+            verified: verifiedRecords.length,
+            failed: failedRecords.length,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+        toast({
+          variant: "destructive",
+          title: "Evidence Upload Incomplete",
+          description: `${verifiedRecords.length}/${stagedRecords.length} verified. ${failedRecords.length} frame${failedRecords.length === 1 ? " requires" : "s require"} attention. Originals remain staged locally.`,
+        });
+        return;
+      }
+
+      const recordsByObservation = new Map<string, StagedEvidenceRecord[]>();
+      verifiedRecords.forEach(record => recordsByObservation.set(record.observationId, [...(recordsByObservation.get(record.observationId) || []), record]));
+      const batch = writeBatch(db);
       for (const [observationIndex, obs] of observationsList.entries()) {
-        const cloudImageUrls = cloudUrlsByObs[obs.id] || [];
+        const manifests = (recordsByObservation.get(obs.id) || []).map(record => record.manifest).filter((manifest): manifest is EvidenceManifestEntry => Boolean(manifest));
+        const cloudImageUrls = manifests.map(manifest => manifest.downloadUrl);
 
         // [ENHANCEMENT 4] Normalization search tags for the sub-observation
         const subTextPool = [
@@ -373,22 +618,37 @@ export default function FieldIntakePage() {
         ].join(" ").toLowerCase();
         const sub_search_tags = Array.from(new Set(subTextPool.split(/[\s,.;:!?()"/#&\-_]+/).filter(w => w.length > 1)));
 
-        await addDoc(collection(db, "field_observations", docRef.id, "sub_observations"), {
+        batch.set(doc(db, "field_observations", allocation.id, "sub_observations", obs.id), {
           observationId: obs.id,
           observationType: obs.type,
           priority: obs.priority,
           description: obs.description,
           createdAt: submissionTimestamp,
           itemPhotos: cloudImageUrls,
+          evidenceManifest: manifests,
+          evidenceVerificationStatus: "VERIFIED",
+          evidenceVerifiedCount: manifests.length,
+          evidenceExpectedCount: obs.evidenceIds?.length || 0,
           search_tags: sub_search_tags,
           itemNumber: formatItemNumber(allocation.sequenceNumber, observationIndex + 1),
           itemSequence: observationIndex + 1,
           reportNumber: allocation.reportNumber,
           reportSequence: allocation.sequenceNumber,
-          parentObservationId: docRef.id,
+          parentObservationId: allocation.id,
         });
       }
-
+      batch.update(doc(db, "field_observations", allocation.id), {
+        status: "Needs Verification",
+        evidenceIntegrity: {
+          total: stagedRecords.length,
+          verified: stagedRecords.length,
+          failed: 0,
+          verificationStatus: "VERIFIED",
+          verifiedAt: new Date().toISOString(),
+        },
+      });
+      await batch.commit();
+      await deleteStagedEvidenceMany(evidenceIds);
       localStorage.removeItem("field_observation_full_draft"); 
       setIsSubmittedSuccessfully(true);
       toast({ title: "Report Saved", description: "All observations pushed to the PM verification queue." });
@@ -406,7 +666,10 @@ export default function FieldIntakePage() {
   };
 
   const resetFormState = () => {
-    setObservationsList([{ id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [] }]);
+    setObservationsList([{ id: crypto.randomUUID(), type: "General", priority: "Low", description: "", attachedFiles: [], previewUrls: [], evidenceIds: [] }]);
+    setUploadProgressList([]);
+    setPendingAllocation(null);
+    setDraftId(crypto.randomUUID());
     setSector("");
     setSelectedPersonnel([]);
     setIsSubmittedSuccessfully(false);
@@ -639,22 +902,11 @@ export default function FieldIntakePage() {
                         accept="image/*"
                         multiple
                         className="hidden"
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           const chosenFiles = e.target.files ? Array.from(e.target.files) : [];
+                          e.currentTarget.value = "";
                           if (chosenFiles.length === 0) return;
-                          
-                          const newPreviews = chosenFiles.map(file => URL.createObjectURL(file));
-
-                          setObservationsList(observationsList.map(item => {
-                            if (item.id === obs.id) {
-                              return {
-                                ...item,
-                                attachedFiles: [...(item.attachedFiles || []), ...chosenFiles],
-                                previewUrls: [...(item.previewUrls || []), ...newPreviews]
-                              };
-                            }
-                            return item;
-                          }));
+                          await stageEvidenceFiles(obs.id, chosenFiles);
                         }}
                       />
 
@@ -677,30 +929,25 @@ export default function FieldIntakePage() {
 
                     {obs.previewUrls && obs.previewUrls.length > 0 ? (
                       <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200">
-                        {obs.previewUrls.map((url: string, idx: number) => (
-                          <div key={idx} className="relative h-14 w-20 border rounded bg-slate-900 overflow-hidden shrink-0 group">
-                            <img src={url} alt={`Preview ${idx + 1}`} className="w-full h-full object-cover" />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                URL.revokeObjectURL(url);
-                                setObservationsList(observationsList.map(item => {
-                                  if (item.id === obs.id) {
-                                    return {
-                                      ...item,
-                                      attachedFiles: item.attachedFiles.filter((_: any, fIdx: number) => fIdx !== idx),
-                                      previewUrls: item.previewUrls.filter((_: any, pIdx: number) => pIdx !== idx)
-                                    };
-                                  }
-                                  return item;
-                                }));
-                              }}
-                              className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[9px] font-bold transition-opacity cursor-pointer"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
+                        {obs.previewUrls.map((url: string, idx: number) => {
+                          const evidenceId = obs.evidenceIds?.[idx];
+                          const progress = uploadProgressList.find(item => item.id === evidenceId);
+                          return (
+                            <div key={evidenceId || idx} className={`relative h-14 w-20 border rounded bg-slate-900 overflow-hidden shrink-0 group ${progress?.status === "FAILED" ? "border-red-500 ring-1 ring-red-500" : ""}`}>
+                              <img src={url} alt={`Preview ${idx + 1}`} className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => void removeEvidenceFrame(obs.id, idx)}
+                                className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[9px] font-bold transition-opacity cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                              <span className={`absolute bottom-0 left-0 right-0 px-1 py-0.5 text-center text-[7px] font-bold uppercase text-white ${progress?.status === "VERIFIED" ? "bg-emerald-600/90" : progress?.status === "FAILED" ? "bg-red-600/90" : "bg-slate-900/80"}`}>
+                                {progress?.status || "STAGED"}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="text-[11px] text-slate-400 italic pt-2 border-t border-dashed text-center">
@@ -736,9 +983,19 @@ export default function FieldIntakePage() {
           ))}
         </div>
 
-        <div className="flex justify-end pt-4 border-t">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-4 border-t">
+          {evidenceStateSummary.total > 0 ? (
+            <div className={`flex items-center gap-2 text-xs font-bold ${evidenceStateSummary.complete ? "text-emerald-700" : evidenceStateSummary.failed > 0 ? "text-red-700" : "text-amber-700"}`}>
+              {evidenceStateSummary.complete ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              {evidenceStateSummary.complete
+                ? `Evidence: ${evidenceStateSummary.verified}/${evidenceStateSummary.total} Verified`
+                : evidenceStateSummary.failed > 0
+                  ? `Evidence Upload Incomplete: ${evidenceStateSummary.verified}/${evidenceStateSummary.total} Verified — ${evidenceStateSummary.failed} require attention`
+                  : `Evidence staged locally: ${evidenceStateSummary.verified}/${evidenceStateSummary.total} Verified`}
+            </div>
+          ) : <span className="text-xs text-slate-500">No evidence frames attached.</span>}
           <Button type="submit" disabled={isSubmitting} className="bg-[#142E88] hover:bg-[#1f3ab3] text-white font-bold rounded-sm h-11 px-8 text-sm shadow-sm cursor-pointer">
-            {isSubmitting ? "Transmitting Field Pack..." : "Submit All Field Logs"}
+            {isSubmitting ? "Uploading and Verifying Evidence..." : evidenceStateSummary.total > 0 && evidenceStateSummary.complete ? "Finalize Verified Field Logs" : "Submit All Field Logs"}
           </Button>
         </div>
       </form>
@@ -801,11 +1058,11 @@ export default function FieldIntakePage() {
         <div className="fixed bottom-6 right-6 w-96 bg-slate-900/95 backdrop-blur-md border border-slate-700/60 rounded-lg shadow-2xl p-4 text-white z-50 space-y-3 font-sans print:hidden animate-in slide-in-from-bottom duration-300">
           <div className="flex items-center justify-between border-b border-slate-700/50 pb-2">
             <div className="flex items-center gap-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent" />
-              <h3 className="text-xs font-bold uppercase tracking-wider">Uploading Evidence Pack</h3>
+              {isSubmitting ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent" /> : <CheckCircle2 className="h-4 w-4 text-slate-400" />}
+              <h3 className="text-xs font-bold uppercase tracking-wider">Evidence Integrity</h3>
             </div>
             <span className="text-[10px] text-slate-400 font-mono">
-              {uploadProgressList.filter(p => p.status === 'success').length} / {uploadProgressList.length} Complete
+              {evidenceStateSummary.verified} / {evidenceStateSummary.total} Verified
             </span>
           </div>
           
@@ -820,39 +1077,24 @@ export default function FieldIntakePage() {
                     <span className="font-mono text-[10px] text-slate-400">
                       {item.percentage}%
                     </span>
-                    {item.status === 'running' && (
+                    {item.status === "FAILED" && (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (item.task) {
-                            item.task.pause();
-                            setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'paused' } : p));
-                          }
-                        }}
-                        className="text-[9px] bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded border border-slate-700 cursor-pointer text-white"
+                        onClick={() => void retryEvidenceFrame(item.id)}
+                        disabled={isSubmitting}
+                        className="text-[9px] bg-red-600 hover:bg-red-500 disabled:opacity-50 px-1.5 py-0.5 rounded cursor-pointer text-white flex items-center gap-1"
                       >
-                        Pause
+                        <RotateCcw className="h-2.5 w-2.5" /> Retry
                       </button>
                     )}
-                    {item.status === 'paused' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (item.task) {
-                            item.task.resume();
-                            setUploadProgressList(prev => prev.map(p => p.id === item.id ? { ...p, status: 'running' } : p));
-                          }
-                        }}
-                        className="text-[9px] bg-blue-600 hover:bg-blue-500 px-1.5 py-0.5 rounded cursor-pointer text-white"
-                      >
-                        Resume
-                      </button>
+                    {item.status === "VERIFIED" && (
+                      <span className="text-[9px] text-emerald-400 font-bold uppercase">Verified</span>
                     )}
-                    {item.status === 'success' && (
-                      <span className="text-[9px] text-emerald-400 font-bold uppercase">Success</span>
+                    {item.status === "VERIFYING" && (
+                      <span className="text-[9px] text-blue-300 font-bold uppercase">Verifying</span>
                     )}
-                    {item.status === 'error' && (
-                      <span className="text-[9px] text-rose-400 font-bold uppercase">Error</span>
+                    {item.status === "STAGED" && (
+                      <span className="text-[9px] text-amber-300 font-bold uppercase">Staged Locally</span>
                     )}
                   </div>
                 </div>
@@ -860,14 +1102,15 @@ export default function FieldIntakePage() {
                 <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
                   <div 
                     className={`h-full transition-all duration-300 ${
-                      item.status === 'success' ? 'bg-emerald-500' :
-                      item.status === 'error' ? 'bg-rose-500' :
-                      item.status === 'paused' ? 'bg-amber-500' :
-                      'bg-blue-500 animate-pulse'
+                      item.status === "VERIFIED" ? "bg-emerald-500" :
+                      item.status === "FAILED" ? "bg-rose-500" :
+                      item.status === "STAGED" ? "bg-amber-500" :
+                      "bg-blue-500 animate-pulse"
                     }`}
                     style={{ width: `${item.percentage}%` }}
                   />
                 </div>
+                {item.error && <p className="text-[9px] leading-tight text-rose-300">{item.error}</p>}
               </div>
             ))}
           </div>

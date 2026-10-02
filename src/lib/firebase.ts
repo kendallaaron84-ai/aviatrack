@@ -15,6 +15,7 @@ const firebaseConfig = {
 
 // Initialize Firebase only once to prevent memory leaks
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const firebaseApp = app;
 
 // Export the instances so other files can just import them
 export const db = getFirestore(app);

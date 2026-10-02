@@ -9,8 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter, Download } from "lucide-react";
-import { createProjectNameMap, normalizeRaidProbability, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+import { ShieldAlert, RefreshCw, Layers, Users, Calendar, Filter, Download, Archive, Trash2, X } from "lucide-react";
+import { createProjectNameMap, isArchivedRaidRecord, normalizeRaidProbability, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Operational Parametric Normalization Weights
 const PROBABILITY_WEIGHTS: Record<number, number> = { 4: 1.0, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.0 };
@@ -38,6 +38,11 @@ export default function RiskClusterDashboard() {
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [commentText, setCommentText] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
+  const [registryView, setRegistryView] = useState<"ACTIVE" | "ARCHIVED">("ACTIVE");
+  const [isRegistryActionPending, setIsRegistryActionPending] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [deleteDisposition, setDeleteDisposition] = useState("DUPLICATE");
+  const [deleteReason, setDeleteReason] = useState("");
 
   // Filter Configuration States
   const [importanceFilter, setImportanceFilter] = useState<string>("ALL");
@@ -81,6 +86,8 @@ export default function RiskClusterDashboard() {
   // Comprehensive Date & Importance Filter Engine
   const filteredItems = useMemo(() => {
   return resolvedItems.filter(item => {
+    if (registryView === "ACTIVE" && isArchivedRaidRecord(item)) return false;
+    if (registryView === "ARCHIVED" && !isArchivedRaidRecord(item)) return false;
     if (importanceFilter !== "ALL" && item.importance !== importanceFilter) return false;
 
     // 🆕 PROJECT CLASSIFICATION FILTER CHECK
@@ -93,18 +100,18 @@ export default function RiskClusterDashboard() {
     }
     return true;
   });
-}, [resolvedItems, importanceFilter, fromDate, toDate, selectedProject]);
+}, [resolvedItems, importanceFilter, fromDate, toDate, selectedProject, registryView]);
 
   // Compute live contextual counts based on complete backend query snapshot
   const importanceCounts = useMemo(() => {
     const counts: Record<string, number> = { Critical: 0, Mandatory: 0, High: 0, Medium: 0, Low: 0 };
-    resolvedItems.forEach(item => {
+    resolvedItems.filter(item => registryView === "ARCHIVED" ? isArchivedRaidRecord(item) : !isArchivedRaidRecord(item)).forEach(item => {
       if (counts[item.importance] !== undefined) {
         counts[item.importance]++;
       }
     });
     return counts;
-  }, [resolvedItems]);
+  }, [resolvedItems, registryView]);
 
   // Coordinate Data Mapping normalizer
   const clusteredData = useMemo(() => {
@@ -134,12 +141,63 @@ export default function RiskClusterDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "RAID ingestion failed.");
-      alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0}; Created: ${data.createdCount || 0}; Merged: ${data.mergedCount || 0}; Skipped: ${data.skippedCount || 0}; Errors: ${data.errorCount || 0}.`);
+      alert(`AI Ingestion Pipeline Executed. Processed: ${data.processedCount || 0}; Created: ${data.createdCount || 0}; Evidence Merged: ${data.mergedCount || 0}; Suppressed: ${data.suppressedCount || 0}; No RAID Required: ${data.noRaidCount || 0}; Skipped: ${data.skippedCount || 0}; Errors: ${data.errorCount || 0}.`);
     } catch (err) {
       console.error(err);
       alert("Failed to safely establish background pipeline tunnel.");
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleArchiveSelected = async () => {
+    if (!selectedItem) return;
+    const restoring = isArchivedRaidRecord(selectedItem);
+    if (!window.confirm(`${restoring ? "Restore" : "Archive"} ${selectedItem.raidNumber || selectedItem.id}?\n\nProject: ${selectedItem.projectName}\nTitle: ${selectedItem.title}`)) return;
+    setIsRegistryActionPending(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
+      const response = await fetch(`/api/raid/${encodeURIComponent(selectedItem.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: restoring ? "RESTORE" : "ARCHIVE" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Archive operation failed.");
+      setSelectedItem(null);
+      alert(`${result.raidNumber} ${restoring ? "restored to the active registry" : "archived"}.`);
+    } catch (error: any) {
+      alert(error.message || "Archive operation failed.");
+    } finally {
+      setIsRegistryActionPending(false);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!selectedItem) return;
+    setIsRegistryActionPending(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("Authentication required.");
+      const response = await fetch(`/api/raid/${encodeURIComponent(selectedItem.id)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          disposition: deleteDisposition === "OTHER" ? "PM_REJECTED" : deleteDisposition,
+          reason: deleteDisposition === "OTHER" ? (deleteReason || "Other Program Manager rejection reason.") : (deleteReason || undefined),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "RAID deletion failed.");
+      setSelectedItem(null);
+      setIsDeleteDialogOpen(false);
+      setDeleteReason("");
+      alert(`${result.deletedRaidNumber} was permanently deleted after suppression protection was verified.`);
+    } catch (error: any) {
+      alert(error.message || "RAID deletion failed. The record was retained.");
+    } finally {
+      setIsRegistryActionPending(false);
     }
   };
 
@@ -324,6 +382,15 @@ export default function RiskClusterDashboard() {
           <Filter className="h-3 w-3" /> Importance Filters:
         </span>
         <select
+          value={registryView}
+          onChange={event => { setRegistryView(event.target.value as "ACTIVE" | "ARCHIVED"); setSelectedItem(null); }}
+          className="border border-slate-200 bg-white px-2 py-1 text-[10px] font-mono font-bold text-slate-700"
+          aria-label="Choose active or archived RAID records"
+        >
+          <option value="ACTIVE">Active Registry</option>
+          <option value="ARCHIVED">Archived Records</option>
+        </select>
+        <select
           value={selectedProject}
           onChange={event => setSelectedProject(event.target.value)}
           className="border border-slate-200 bg-white px-2 py-1 text-[10px] font-mono text-slate-700"
@@ -338,7 +405,7 @@ export default function RiskClusterDashboard() {
             importanceFilter === "ALL" ? "bg-[#142E88] text-white border-[#142E88]" : "bg-slate-50 text-slate-600 border-slate-200 hover:border-slate-300"
           }`}
         >
-          All Items ({raidqItems.length})
+          All Items ({resolvedItems.filter(item => registryView === "ARCHIVED" ? isArchivedRaidRecord(item) : !isArchivedRaidRecord(item)).length})
         </button>
         {Object.keys(importanceCounts).map((lvl) => (
           <button
@@ -458,12 +525,20 @@ export default function RiskClusterDashboard() {
           {selectedItem && (
             <Card className="rounded-none border-slate-200 bg-white shadow-xs">
               <CardHeader className="border-b border-slate-200 py-3 bg-slate-50/50">
-                <CardTitle className="text-xs font-bold uppercase tracking-wider text-[#142E88] flex justify-between items-center font-mono">
+                <CardTitle className="text-xs font-bold uppercase tracking-wider text-[#142E88] flex flex-wrap justify-between items-center gap-2 font-mono">
                   <span>Triage Management Console: {selectedItem.title}</span>
-                  <span className="text-[10px] text-slate-400">RAID ID: {selectedItem.raidNumber || selectedItem.id}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-400">RAID ID: {selectedItem.raidNumber || selectedItem.id}</span>
+                    <Button type="button" variant="outline" size="sm" disabled={isRegistryActionPending} onClick={() => void handleArchiveSelected()} className="h-7 rounded-none text-[9px] uppercase text-amber-700 border-amber-300 hover:bg-amber-50">
+                      <Archive className="h-3 w-3 mr-1" /> {isArchivedRaidRecord(selectedItem) ? "Restore" : "Archive"}
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" disabled={isRegistryActionPending} onClick={() => setIsDeleteDialogOpen(true)} className="h-7 rounded-none text-[9px] uppercase text-red-700 border-red-300 hover:bg-red-50">
+                      <Trash2 className="h-3 w-3 mr-1" /> Delete RAID Entry
+                    </Button>
+                  </div>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="p-6 space-y-6 text-xs font-mono">
+              <CardContent className={`p-6 space-y-6 text-xs font-mono ${isArchivedRaidRecord(selectedItem) ? "pointer-events-none opacity-70" : ""}`}>
                 
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4 border-b border-slate-200 bg-slate-50/50 p-4 border rounded-sm">
                   
@@ -604,9 +679,9 @@ export default function RiskClusterDashboard() {
             <div className="flex items-center gap-2 text-slate-700">
               <Users className="h-4 w-4 text-[#142E88]" />
               <div>
-                <CardTitle className="text-xs font-bold uppercase tracking-wider font-mono text-slate-700">Active Risk Registry Index</CardTitle>
+                <CardTitle className="text-xs font-bold uppercase tracking-wider font-mono text-slate-700">{registryView === "ARCHIVED" ? "Archived RAID Registry Index" : "Active Risk Registry Index"}</CardTitle>
                 <CardDescription className="text-[10px] text-slate-400 font-mono">
-                  {filteredItems.length} active logs matching current filter scope
+                  {filteredItems.length} {registryView === "ARCHIVED" ? "archived" : "active"} logs matching current filter scope
                 </CardDescription>
               </div>
             </div>
@@ -652,6 +727,48 @@ export default function RiskClusterDashboard() {
         </Card>
 
       </div>
+
+      {isDeleteDialogOpen && selectedItem && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 flex items-center justify-center p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="delete-raid-title" className="w-full max-w-lg bg-white border border-red-200 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 p-4 border-b border-red-100 bg-red-50">
+              <div>
+                <h2 id="delete-raid-title" className="text-sm font-black text-red-900 uppercase">Permanently delete {selectedItem.raidNumber || selectedItem.id}?</h2>
+                <p className="text-xs text-red-800 mt-1">This RAID record will be removed from the active registry. AviaTrack will retain only the suppression metadata required to prevent AI recreation.</p>
+              </div>
+              <button type="button" onClick={() => setIsDeleteDialogOpen(false)} className="text-red-700 hover:text-red-900"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="p-4 space-y-4 text-xs">
+              <div className="border border-slate-200 bg-slate-50 p-3 space-y-1">
+                <p><strong>RAID ID:</strong> {selectedItem.raidNumber || selectedItem.id}</p>
+                <p><strong>Project:</strong> {selectedItem.projectName}</p>
+                <p><strong>Title:</strong> {selectedItem.title}</p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">Deletion reason</label>
+                <select value={deleteDisposition} onChange={event => setDeleteDisposition(event.target.value)} className="w-full border border-slate-300 bg-white p-2 text-xs">
+                  <option value="DUPLICATE">Duplicate</option>
+                  <option value="PM_REJECTED">Vague / Inaccurate</option>
+                  <option value="CREATED_IN_ERROR">Created in Error</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </div>
+              {deleteDisposition === "OTHER" && (
+                <div>
+                  <label className="block text-[10px] font-bold uppercase text-slate-600 mb-1">Optional explanation</label>
+                  <Textarea value={deleteReason} onChange={event => setDeleteReason(event.target.value)} maxLength={500} rows={3} className="rounded-none" placeholder="Briefly explain why this RAID entry is being rejected…" />
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-end gap-2">
+              <Button type="button" variant="outline" disabled={isRegistryActionPending} onClick={() => setIsDeleteDialogOpen(false)} className="rounded-none">Cancel</Button>
+              <Button type="button" disabled={isRegistryActionPending} onClick={() => void handleDeleteSelected()} className="rounded-none bg-red-700 hover:bg-red-800 text-white">
+                <Trash2 className="h-4 w-4 mr-1" /> {isRegistryActionPending ? "Protecting and deleting…" : "Delete permanently"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

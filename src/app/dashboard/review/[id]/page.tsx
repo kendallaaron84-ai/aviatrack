@@ -21,6 +21,13 @@ import { legacyReportNumber } from "@/lib/field-observation-utils";
 
 const getSubObsPhotos = (item: any): string[] => {
   if (!item) return [];
+  if (Array.isArray(item.evidenceManifest) && item.evidenceManifest.length > 0) {
+    const verifiedUrls = item.evidenceManifest
+      .filter((entry: any) => entry?.verificationStatus === "VERIFIED")
+      .map((entry: any) => entry?.downloadUrl)
+      .filter((url: unknown): url is string => typeof url === "string" && url.trim().length > 0);
+    if (verifiedUrls.length > 0) return verifiedUrls;
+  }
   if (Array.isArray(item.itemPhotos) && item.itemPhotos.length > 0) return item.itemPhotos;
   if (Array.isArray(item.photos) && item.photos.length > 0) return item.photos;
   if (Array.isArray(item.photoUrls) && item.photoUrls.length > 0) return item.photoUrls;
@@ -29,6 +36,84 @@ const getSubObsPhotos = (item: any): string[] => {
   if (typeof item.imageUrl === 'string' && item.imageUrl.trim()) return [item.imageUrl];
   if (typeof item.photoUrl === 'string' && item.photoUrl.trim()) return [item.photoUrl];
   return [];
+};
+
+const EvidenceUnavailable = ({ label, detail = false }: { label: string; detail?: boolean }) => (
+  <div className={`${detail ? "w-full h-full min-h-[7in]" : "w-[150px] h-[150px]"} flex flex-col items-center justify-center gap-2 border border-amber-300 bg-amber-50 text-amber-900 text-center p-3 print:bg-white`}>
+    <ShieldAlert className={detail ? "h-8 w-8" : "h-5 w-5"} />
+    <span className="text-[10px] font-mono font-bold uppercase">Evidence Unavailable</span>
+    <span className="text-[8px] font-mono text-amber-700">{label}</span>
+  </div>
+);
+
+const EvidencePhotoThumbnail = ({
+  photoUrl,
+  frameLabel,
+  alt,
+  openImageModal,
+}: {
+  photoUrl: string;
+  frameLabel: string;
+  alt: string;
+  openImageModal: (url: string) => void;
+}) => {
+  const [hasError, setHasError] = useState(false);
+  if (hasError || !photoUrl) return <EvidenceUnavailable label={frameLabel} />;
+
+  return (
+    <div
+      onClick={() => openImageModal(photoUrl)}
+      className="relative w-[150px] h-[150px] rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group shrink-0 flex items-center justify-center print-photo-card"
+    >
+      <img
+        src={photoUrl}
+        alt={alt}
+        onError={() => setHasError(true)}
+        className="block max-w-full max-h-full w-auto h-auto object-contain group-hover:scale-105 transition-transform duration-200"
+      />
+      <div className="absolute top-1 right-1 p-1 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
+        <Maximize2 className="h-2.5 w-2.5" />
+      </div>
+      <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black/60 text-[8px] font-mono font-bold text-white rounded-xs">
+        {frameLabel}
+      </div>
+    </div>
+  );
+};
+
+const EvidenceDetailSheet = ({
+  photoUrl,
+  logLabel,
+  frameLabel,
+  alt,
+}: {
+  photoUrl: string;
+  logLabel: string;
+  frameLabel: string;
+  alt: string;
+}) => {
+  const [hasError, setHasError] = useState(false);
+
+  return (
+    <section className="evidence-detail-page">
+      <div className="w-full mb-3 pb-1 border-b border-slate-300 flex justify-between items-center text-xs font-mono font-bold text-slate-800">
+        <span>{logLabel}</span>
+        <span>{frameLabel}</span>
+      </div>
+      <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
+        {hasError || !photoUrl ? (
+          <EvidenceUnavailable label={frameLabel} detail />
+        ) : (
+          <img
+            src={photoUrl}
+            alt={alt}
+            onError={() => setHasError(true)}
+            className="evidence-detail-image"
+          />
+        )}
+      </div>
+    </section>
+  );
 };
 
 const getDocUrl = (att: any): string => {
@@ -882,23 +967,13 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
                             </label>
                             <div className="flex flex-wrap gap-2 items-start print-photo-row">
                               {photos.map((photoUrl, pIdx) => (
-                                <div 
+                                <EvidencePhotoThumbnail
                                   key={pIdx}
-                                  onClick={() => openImageModal(photoUrl)}
-                                  className="relative w-[150px] h-[150px] rounded-sm border border-slate-200 bg-slate-50 overflow-hidden shadow-xs cursor-pointer hover:border-[#3c38d4] transition-all group shrink-0 flex items-center justify-center print-photo-card"
-                                >
-                                  <img 
-                                    src={photoUrl} 
-                                    alt={`Evidence Frame ${index + 1}-${pIdx + 1}`} 
-                                    className="block max-w-full max-h-full w-auto h-auto object-contain group-hover:scale-105 transition-transform duration-200" 
-                                  />
-                                  <div className="absolute top-1 right-1 p-1 bg-black/70 text-white rounded-xs opacity-0 group-hover:opacity-100 transition-opacity print:hidden">
-                                    <Maximize2 className="h-2.5 w-2.5"/>
-                                  </div>
-                                  <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black/60 text-[8px] font-mono font-bold text-white rounded-xs">
-                                    Frame #{pIdx + 1}
-                                  </div>
-                                </div>
+                                  photoUrl={photoUrl}
+                                  frameLabel={`Frame #${pIdx + 1}`}
+                                  alt={`Evidence Frame ${index + 1}-${pIdx + 1}`}
+                                  openImageModal={openImageModal}
+                                />
                               ))}
                             </div>
                           </div>
@@ -1097,19 +1172,13 @@ export default function ReviewObservationPage({ params }: { params: Promise<{ id
             const photos = getSubObsPhotos(sub);
 
             return photos.map((photoUrl, pIdx) => (
-              <section key={`evidence-${sIdx}-${pIdx}`} className="evidence-detail-page">
-                <div className="w-full mb-3 pb-1 border-b border-slate-300 flex justify-between items-center text-xs font-mono font-bold text-slate-800">
-                  <span>LOG ENTRY #{sIdx + 1} ({sub.observationType || "GENERAL"})</span>
-                  <span>FRAME #{pIdx + 1} OF {photos.length}</span>
-                </div>
-                <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
-                  <img
-                    src={photoUrl}
-                    alt={`Full Evidence Detail ${sIdx + 1}-${pIdx + 1}`}
-                    className="evidence-detail-image"
-                  />
-                </div>
-              </section>
+              <EvidenceDetailSheet
+                key={`evidence-${sIdx}-${pIdx}`}
+                photoUrl={photoUrl}
+                logLabel={`LOG ENTRY #${sIdx + 1} (${sub.observationType || "GENERAL"})`}
+                frameLabel={`FRAME #${pIdx + 1} OF ${photos.length}`}
+                alt={`Full Evidence Detail ${sIdx + 1}-${pIdx + 1}`}
+              />
             ));
           })}
         </div>

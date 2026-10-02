@@ -15,7 +15,7 @@ import { DynamicPortfolioTimeline } from "@/components/dashboard/DynamicPortfoli
 import { LiveProjectTelemetryTable } from "@/components/dashboard/LiveProjectTelemetryTable";
 import type { Project, RAIDItem, RollupState, StatusReport } from "@/types/portfolio";
 import { varianceDays } from "@/lib/date-utils";
-import { createProjectNameMap, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+import { createProjectNameMap, isActiveRaidRecord, RAID_OWNERSHIP_COLORS, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 // Definitive Master Schema Mapping Lists
 const FACILITY_ASSETS = [
@@ -103,7 +103,7 @@ export default function YteviaExecutiveControlRoom() {
     const unsubRollups = onSnapshot(collection(db, "portfolio_rollups"), (s) => setRollups(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore portfolio_rollups listener error:", error));
     const unsubGlobalReports = onSnapshot(query(collection(db, "status_reports"), orderBy("createdAt", "desc")), (s) => setGlobalReports(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore status_reports listener error:", error));
     const unsubWorkbench = onSnapshot(collection(db, "project_workbench_states"), (s) => setWorkbenchStates(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore project_workbench_states listener error:", error));
-    const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (s) => setRaidItems(s.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED")), (error) => console.error("Firestore raid_matrix listener error:", error));
+    const unsubRaid = onSnapshot(collection(db, "raid_matrix"), (s) => setRaidItems(s.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => isActiveRaidRecord(item))), (error) => console.error("Firestore raid_matrix listener error:", error));
     const unsubObs = onSnapshot(collection(db, "field_observations"), (s) => setFieldObservations(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error("Firestore field_observations listener error:", error));
     
     return () => {

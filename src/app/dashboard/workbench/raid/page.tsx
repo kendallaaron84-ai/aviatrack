@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { ShieldAlert, Filter } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-import { createProjectNameMap, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
+import { createProjectNameMap, isActiveRaidRecord, resolveProjectName, resolveRaidOwnershipState } from "@/lib/raid-display-utils";
 
 export default function RaidMatrixDashboard() {
   const [raidItems, setRaidItems] = useState<any[]>([]);
@@ -22,7 +22,7 @@ export default function RaidMatrixDashboard() {
   // Stream structural records in real-time from the ledger
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "raid_matrix"), (snap) => {
-      setRaidItems(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => item.mergeStatus !== "MERGED"));
+      setRaidItems(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter((item: any) => isActiveRaidRecord(item)));
     }, (error) => console.error("Firestore raid_matrix listener error:", error));
     return () => unsub();
   }, []);

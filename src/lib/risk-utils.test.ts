@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, raidProjectLockId, riskSimilarity } from "./risk-utils";
+import { deterministicRaidId, fieldObservationSourceKey, journalSourceKey, normalizeRiskText, raidProjectLockId, raidSuppressionId, riskSimilarity } from "./risk-utils";
 
 test("creates authoritative stable source identities", () => {
   assert.equal(fieldObservationSourceKey("parent", "child", "FOR-1001", "1001-2"), "FOR-1001-2");
@@ -9,6 +9,8 @@ test("creates authoritative stable source identities", () => {
   assert.equal(deterministicRaidId("SOURCE"), deterministicRaidId("SOURCE"));
   assert.equal(raidProjectLockId("P1"), raidProjectLockId("P1"));
   assert.notEqual(raidProjectLockId("P1"), raidProjectLockId("P2"));
+  assert.equal(raidSuppressionId("R1"), raidSuppressionId("R1"));
+  assert.notEqual(raidSuppressionId("R1"), raidSuppressionId("R2"));
 });
 
 test("normalizes deterministic duplicate risk text conservatively", () => {
